@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ALIS Form Markup - Smart Detection UI</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        :root {
+            color-scheme: light;
+            --alis-gold: #FDB913;
+            --alis-orange: #FF9500;
+            --alis-red: #FF5722;
+            --alis-gray: #4A4A4A;
+            --alis-light-gray: #F5F5F5;
+        }
+
+        .confidence-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        .confidence-auto { background-color: #FFF3CD; color: var(--alis-gray); }
+        .confidence-likely { background-color: #FFE8CC; color: var(--alis-gray); }
+        .confidence-review { background-color: #FFDCC4; color: var(--alis-gray); }
+        .confidence-manual { background-color: #FFD4CC; color: var(--alis-gray); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        .status-approved { background-color: #FFF3CD; color: var(--alis-gray); }
+        .status-pending { background-color: #E8F4F8; color: var(--alis-gray); }
+        .status-rejected { background-color: #FFD4CC; color: var(--alis-gray); }
+
+        .drag-over {
+            background-color: #f0f9ff;
+            border-color: #0284c7;
+        }
+
+        .table-container {
+            max-height: 600px;
+            overflow-y: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+        }
+
+        .sticky-header {
+            position: sticky;
+            top: 0;
+            background-color: #f9fafb;
+            z-index: 10;
+        }
+
+        .copy-button {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        tr:hover .copy-button {
+            opacity: 1;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, #10b981, #8b5cf6);
+            height: 4px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #0ea5e9, #06b6d4);
+            animation: progress 1.5s ease-in-out infinite;
+        }
+
+        @keyframes progress {
+            0% { width: 0%; }
+            50% { width: 100%; }
+            100% { width: 0%; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useCallback, useMemo } = React;
+
+        function ALISFormMarkupUI() {
+            const [uploadedFile, setUploadedFile] = useState(null);
+            const [processing, setProcessing] = useState(false);
+            const [results, setResults] = useState(null);
+            const [formTemplate, setFormTemplate] = useState('move-in-assessment-v1');
+            const [searchRadius, setSearchRadius] = useState(100);
+            const [filterStatus, setFilterStatus] = useState('all');
+            const [sortBy, setSortBy] = useState('field_id');
+            const [userActions, setUserActions] = useState({});
+            const fileInputRef = useRef(null);
+            const dragOverRef = useRef(false);
+
+            const formTemplates = [
+                { id: 'move-in-assessment-v1', name: 'Move-In Assessment v1' },
+                { id: 'intake-assessment-v1', name: 'Intake Assessment v1' },
+                { id: 'discharge-summary-v1', name: 'Discharge Summary v1' },
+            ];
+
+            // Mock processing - in production would call Node.js backend
+            const processFile = useCallback(async () => {
+                if (!uploadedFile) return;
+
+                setProcessing(true);
+
+                // Simulate processing delay
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                // Generate mock results
+                const mockResults = {
+                    timestamp: new Date().toISOString(),
+                    input: {
+                        pdf: uploadedFile.name,
+                        formTemplate,
+                        searchRadius
+                    },
+                    summary: {
+                        total_fields: 45,
+                        matched_fields: 42,
+                        unmatched_fields: 3,
+                        auto_approve: 38,
+                        approve_likely: 3,
+                        review_needed: 1,
+                        manual_review: 3,
+                        average_confidence: 0.92
+                    },
+                    suggestions: generateMockSuggestions()
+                };
+
+                setResults(mockResults);
+                setUserActions({});
+                setProcessing(false);
+            }, [uploadedFile, formTemplate, searchRadius]);
+
+            const generateMockSuggestions = () => {
+                const commonLabels = [
+                    { label: 'Resident Name', code: 'alis.resident.full_name', confidence: 0.99, type: 'exact' },
+                    { label: 'Date of Birth', code: 'alis.resident.dob', confidence: 0.98, type: 'exact' },
+                    { label: 'Phone Number', code: 'alis.resident.phone', confidence: 0.95, type: 'exact' },
+                    { label: 'Email Address', code: 'alis.resident.email', confidence: 0.93, type: 'fuzzy' },
+                    { label: 'Community Name', code: 'alis.facility.name', confidence: 0.99, type: 'template' },
+                    { label: 'Assessment Date', code: 'generic.date_assessment.1', confidence: 0.96, type: 'template' },
+                    { label: 'Allergies', code: 'generic.text_allergies.1', confidence: 0.97, type: 'pattern' },
+                    { label: 'Medications', code: 'generic.text_medication.1', confidence: 0.88, type: 'fuzzy' },
+                    { label: 'Physician Signature', code: 'generic.signature_physician.1', confidence: 0.99, type: 'pattern' },
+                    { label: 'Staff Signature', code: 'generic.signature_staff.1', confidence: 0.98, type: 'pattern' },
+                ];
+
+                const suggestions = [];
+                for (let i = 0; i < 45; i++) {
+                    const mock = commonLabels[i % commonLabels.length];
+                    const confidence = i < 38 ? 0.85 + Math.random() * 0.15 : 0.50 + Math.random() * 0.45;
+                    const status = confidence >= 0.95 ? 'auto_approve' :
+                                  confidence >= 0.80 ? 'approve_likely' :
+                                  confidence >= 0.70 ? 'review_needed' : 'manual_review';
+
+                    suggestions.push({
+                        field_id: `field_${i}`,
+                        detected_label: mock.label,
+                        suggested_code: confidence > 0.7 ? mock.code : null,
+                        confidence: confidence,
+                        match_type: mock.type,
+                        status: status,
+                        properties: {
+                            hover_text: `${mock.label}-${i}`,
+                            read_only: confidence > 0.9,
+                            required: confidence > 0.95
+                        }
+                    });
+                }
+
+                return suggestions;
+            };
+
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                dragOverRef.current = true;
+            };
+
+            const handleDragLeave = () => {
+                dragOverRef.current = false;
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                dragOverRef.current = false;
+
+                const files = e.dataTransfer.files;
+                if (files.length > 0 && files[0].type === 'application/pdf') {
+                    setUploadedFile(files[0]);
+                    setResults(null);
+                }
+            };
+
+            const handleFileSelect = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    setUploadedFile(e.target.files[0]);
+                    setResults(null);
+                }
+            };
+
+            const filteredSuggestions = useMemo(() => {
+                if (!results) return [];
+
+                let filtered = results.suggestions.filter(s =>
+                    filterStatus === 'all' || s.status === filterStatus
+                );
+
+                filtered.sort((a, b) => {
+                    switch(sortBy) {
+                        case 'confidence_desc':
+                            return b.confidence - a.confidence;
+                        case 'confidence_asc':
+                            return a.confidence - b.confidence;
+                        case 'status':
+                            const statusOrder = { auto_approve: 0, approve_likely: 1, review_needed: 2, manual_review: 3 };
+                            return statusOrder[a.status] - statusOrder[b.status];
+                        default:
+                            return a.field_id.localeCompare(b.field_id);
+                    }
+                });
+
+                return filtered;
+            }, [results, filterStatus, sortBy]);
+
+            const getStatusCounts = () => {
+                if (!results) return { approved: 0, pending: 0, rejected: 0 };
+
+                const approved = Object.values(userActions).filter(a => a === 'approved').length;
+                const rejected = Object.values(userActions).filter(a => a === 'rejected').length;
+                const pending = results.suggestions.length - approved - rejected;
+
+                return { approved, pending, rejected };
+            };
+
+            const toggleAction = (fieldId, action) => {
+                setUserActions(prev => ({
+                    ...prev,
+                    [fieldId]: prev[fieldId] === action ? null : action
+                }));
+            };
+
+            const bulkApprove = (status) => {
+                if (!results) return;
+
+                const newActions = {};
+                results.suggestions.forEach(s => {
+                    if (s.status === status) {
+                        newActions[s.field_id] = 'approved';
+                    }
+                });
+
+                setUserActions(prev => ({ ...prev, ...newActions }));
+            };
+
+            const downloadJSON = () => {
+                if (!results) return;
+
+                const output = {
+                    ...results,
+                    userApprovals: userActions
+                };
+
+                const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `alis-suggestions-${Date.now()}.json`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            };
+
+            const getCLICommand = () => {
+                if (!uploadedFile) return '';
+                return `npm start -- --pdf "${uploadedFile.name}" --template ${formTemplate} --output results.json`;
+            };
+
+            const counts = getStatusCounts();
+
+            return (
+                <div className="min-h-screen" style={{ backgroundColor: '#FAFAF9' }}>
+                    {/* Header */}
+                    <div className="border-b shadow-sm" style={{ background: 'linear-gradient(135deg, var(--alis-orange) 0%, var(--alis-red) 100%)' }}>
+                        <div className="max-w-7xl mx-auto px-6 py-8">
+                            <h1 className="text-3xl font-bold text-white">ALIS Form Markup</h1>
+                            <p className="text-orange-50 mt-1">Smart Form Field Detection & Property Suggestion</p>
+                        </div>
+                    </div>
+
+                    <div className="max-w-7xl mx-auto px-6 py-8">
+                        {/* Upload Section */}
+                        <div className="bg-white rounded-lg border-2 border-dashed border-slate-300 p-8 mb-8 transition-all hover:border-blue-400"
+                             onDragOver={handleDragOver}
+                             onDragLeave={handleDragLeave}
+                             onDrop={handleDrop}>
+                            <div className="text-center">
+                                <svg className="mx-auto h-12 w-12 text-slate-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                                    <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-6-12v12m0 0l-3-3m3 3l3-3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                                <h3 className="mt-4 text-lg font-semibold text-slate-900">Upload PDF Form</h3>
+                                <p className="text-slate-600 mt-1">Drag and drop or click to select a Tungsten-marked PDF</p>
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".pdf"
+                                    onChange={handleFileSelect}
+                                    className="hidden"
+                                />
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="mt-4 px-4 py-2 text-white rounded-lg transition-colors"
+                                    style={{ backgroundColor: 'var(--alis-orange)', marginTop: '1rem' }}
+                                    onMouseEnter={(e) => e.target.style.backgroundColor = 'var(--alis-red)'}
+                                    onMouseLeave={(e) => e.target.style.backgroundColor = 'var(--alis-orange)'}
+                                >
+                                    Select PDF
+                                </button>
+                            </div>
+
+                            {uploadedFile && (
+                                <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                                    <p className="text-sm font-medium text-blue-900">
+                                        📄 {uploadedFile.name} ({(uploadedFile.size / 1024 / 1024).toFixed(2)} MB)
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Configuration Section */}
+                        {uploadedFile && !results && (
+                            <div className="bg-white rounded-lg shadow p-6 mb-8">
+                                <h2 className="text-lg font-semibold text-slate-900 mb-4">Configuration</h2>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                                            Form Template
+                                        </label>
+                                        <select
+                                            value={formTemplate}
+                                            onChange={(e) => setFormTemplate(e.target.value)}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        >
+                                            {formTemplates.map(t => (
+                                                <option key={t.id} value={t.id}>{t.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                                            OCR Search Radius: {searchRadius}px
+                                        </label>
+                                        <input
+                                            type="range"
+                                            min="50"
+                                            max="300"
+                                            value={searchRadius}
+                                            onChange={(e) => setSearchRadius(parseInt(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={processFile}
+                                    disabled={processing}
+                                    className="mt-6 w-full py-3 text-white font-semibold rounded-lg transition-colors disabled:bg-gray-400"
+                                    style={{ backgroundColor: processing ? '#ccc' : 'var(--alis-orange)' }}
+                                    onMouseEnter={(e) => !processing && (e.target.style.backgroundColor = 'var(--alis-red)')}
+                                    onMouseLeave={(e) => !processing && (e.target.style.backgroundColor = 'var(--alis-orange)')}
+                                >
+                                    {processing ? 'Processing...' : 'Run Analysis'}
+                                </button>
+
+                                {processing && (
+                                    <div className="mt-4">
+                                        <div className="progress-bar">
+                                            <div className="progress-fill"></div>
+                                        </div>
+                                        <p className="text-sm text-slate-600 mt-2 text-center">
+                                            Detecting fields • Extracting labels • Matching codes...
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Results Section */}
+                        {results && (
+                            <div className="space-y-6">
+                                {/* Summary Stats */}
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                    <div className="bg-white rounded-lg shadow p-6 border-l-4" style={{ borderColor: 'var(--alis-gray)' }}>
+                                        <p className="text-sm font-medium text-slate-600">Total Fields</p>
+                                        <p className="text-3xl font-bold text-slate-900 mt-2">{results.summary.total_fields}</p>
+                                    </div>
+
+                                    <div className="bg-white rounded-lg shadow p-6 border-l-4" style={{ borderColor: 'var(--alis-gold)' }}>
+                                        <p className="text-sm font-medium text-slate-600">Matched Fields</p>
+                                        <p className="text-3xl font-bold text-slate-900 mt-2">
+                                            {results.summary.matched_fields}
+                                        </p>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            {((results.summary.matched_fields / results.summary.total_fields) * 100).toFixed(0)}% matched
+                                        </p>
+                                    </div>
+
+                                    <div className="bg-white rounded-lg shadow p-6 border-l-4" style={{ borderColor: 'var(--alis-orange)' }}>
+                                        <p className="text-sm font-medium text-slate-600">Auto-Approve Ready</p>
+                                        <p className="text-3xl font-bold text-slate-900 mt-2">{results.summary.auto_approve}</p>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            {((results.summary.auto_approve / results.summary.total_fields) * 100).toFixed(0)}%
+                                        </p>
+                                    </div>
+
+                                    <div className="bg-white rounded-lg shadow p-6 border-l-4" style={{ borderColor: 'var(--alis-red)' }}>
+                                        <p className="text-sm font-medium text-slate-600">Avg. Confidence</p>
+                                        <p className="text-3xl font-bold text-slate-900 mt-2">
+                                            {(results.summary.average_confidence * 100).toFixed(0)}%
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Status Breakdown */}
+                                <div className="bg-white rounded-lg shadow p-6">
+                                    <h2 className="text-lg font-semibold text-slate-900 mb-4">Approval Status</h2>
+
+                                    <div className="grid grid-cols-3 gap-4">
+                                        <div className="text-center">
+                                            <div className="text-3xl font-bold text-green-600">{counts.approved}</div>
+                                            <p className="text-sm text-slate-600 mt-1">Approved</p>
+                                        </div>
+                                        <div className="text-center">
+                                            <div className="text-3xl font-bold text-blue-600">{counts.pending}</div>
+                                            <p className="text-sm text-slate-600 mt-1">Pending Review</p>
+                                        </div>
+                                        <div className="text-center">
+                                            <div className="text-3xl font-bold text-red-600">{counts.rejected}</div>
+                                            <p className="text-sm text-slate-600 mt-1">Rejected</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Filters & Bulk Actions */}
+                                <div className="bg-white rounded-lg shadow p-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-2">Filter by Status</label>
+                                            <select
+                                                value={filterStatus}
+                                                onChange={(e) => setFilterStatus(e.target.value)}
+                                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                <option value="all">All Statuses</option>
+                                                <option value="auto_approve">🟢 Auto-Approve</option>
+                                                <option value="approve_likely">🟡 Approve Likely</option>
+                                                <option value="review_needed">🟠 Review Needed</option>
+                                                <option value="manual_review">🔴 Manual Review</option>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-2">Sort by</label>
+                                            <select
+                                                value={sortBy}
+                                                onChange={(e) => setSortBy(e.target.value)}
+                                                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            >
+                                                <option value="field_id">Field ID</option>
+                                                <option value="confidence_desc">Confidence (High to Low)</option>
+                                                <option value="confidence_asc">Confidence (Low to High)</option>
+                                                <option value="status">Status</option>
+                                            </select>
+                                        </div>
+
+                                        <div className="flex gap-2 items-end">
+                                            <button
+                                                onClick={() => bulkApprove('auto_approve')}
+                                                className="flex-1 px-3 py-2 rounded-lg transition-colors text-sm font-medium text-white"
+                                                style={{ backgroundColor: 'var(--alis-gold)', color: 'var(--alis-gray)' }}
+                                                onMouseEnter={(e) => e.target.style.backgroundColor = 'var(--alis-orange)'}
+                                                onMouseLeave={(e) => e.target.style.backgroundColor = 'var(--alis-gold)'}
+                                            >
+                                                Approve All Auto
+                                            </button>
+                                            <button
+                                                onClick={downloadJSON}
+                                                className="flex-1 px-3 py-2 rounded-lg transition-colors text-sm font-medium text-white"
+                                                style={{ backgroundColor: 'var(--alis-orange)' }}
+                                                onMouseEnter={(e) => e.target.style.backgroundColor = 'var(--alis-red)'}
+                                                onMouseLeave={(e) => e.target.style.backgroundColor = 'var(--alis-orange)'}
+                                            >
+                                                Download JSON
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Suggestions Table */}
+                                <div className="bg-white rounded-lg shadow overflow-hidden">
+                                    <div className="table-container">
+                                        <table className="w-full text-sm">
+                                            <thead className="sticky-header">
+                                                <tr className="border-b border-slate-200">
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Field ID</th>
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Label</th>
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Suggested Code</th>
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Confidence</th>
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
+                                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {filteredSuggestions.map((suggestion) => (
+                                                    <tr key={suggestion.field_id} className="border-b border-slate-200 hover:bg-slate-50">
+                                                        <td className="px-4 py-3 font-mono text-xs text-slate-600">{suggestion.field_id}</td>
+                                                        <td className="px-4 py-3 text-slate-900">{suggestion.detected_label || '(unknown)'}</td>
+                                                        <td className="px-4 py-3">
+                                                            <code className="text-xs bg-slate-100 px-2 py-1 rounded">{suggestion.suggested_code || '—'}</code>
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="w-16 h-2 bg-slate-200 rounded-full overflow-hidden">
+                                                                    <div
+                                                                        className="h-full"
+                                                                        style={{
+                                                                            width: `${suggestion.confidence * 100}%`,
+                                                                            background: 'linear-gradient(90deg, var(--alis-red), var(--alis-orange), var(--alis-gold))'
+                                                                        }}
+                                                                    ></div>
+                                                                </div>
+                                                                <span className="text-xs font-medium text-slate-700">
+                                                                    {(suggestion.confidence * 100).toFixed(0)}%
+                                                                </span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <span className={`confidence-badge confidence-${suggestion.status.split('_')[0]}`}>
+                                                                {suggestion.status === 'auto_approve' && '🟢'}
+                                                                {suggestion.status === 'approve_likely' && '🟡'}
+                                                                {suggestion.status === 'review_needed' && '🟠'}
+                                                                {suggestion.status === 'manual_review' && '🔴'}
+                                                                {suggestion.status.replace(/_/g, ' ')}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <div className="flex gap-2">
+                                                                <button
+                                                                    onClick={() => toggleAction(suggestion.field_id, 'approved')}
+                                                                    className="px-2 py-1 rounded text-xs font-medium transition-colors text-white"
+                                                                    style={{
+                                                                        backgroundColor: userActions[suggestion.field_id] === 'approved' ? 'var(--alis-gold)' : 'var(--alis-light-gray)',
+                                                                        color: userActions[suggestion.field_id] === 'approved' ? 'var(--alis-gray)' : 'var(--alis-gray)',
+                                                                        border: '1px solid var(--alis-orange)'
+                                                                    }}
+                                                                    onMouseEnter={(e) => {
+                                                                        if (userActions[suggestion.field_id] !== 'approved') {
+                                                                            e.target.style.backgroundColor = 'var(--alis-gold)';
+                                                                        }
+                                                                    }}
+                                                                    onMouseLeave={(e) => {
+                                                                        if (userActions[suggestion.field_id] !== 'approved') {
+                                                                            e.target.style.backgroundColor = 'var(--alis-light-gray)';
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    ✓
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => toggleAction(suggestion.field_id, 'rejected')}
+                                                                    className="px-2 py-1 rounded text-xs font-medium transition-colors text-white"
+                                                                    style={{
+                                                                        backgroundColor: userActions[suggestion.field_id] === 'rejected' ? 'var(--alis-red)' : 'var(--alis-light-gray)',
+                                                                        color: userActions[suggestion.field_id] === 'rejected' ? 'white' : 'var(--alis-gray)',
+                                                                        border: '1px solid var(--alis-orange)'
+                                                                    }}
+                                                                    onMouseEnter={(e) => {
+                                                                        if (userActions[suggestion.field_id] !== 'rejected') {
+                                                                            e.target.style.backgroundColor = 'var(--alis-orange)';
+                                                                        }
+                                                                    }}
+                                                                    onMouseLeave={(e) => {
+                                                                        if (userActions[suggestion.field_id] !== 'rejected') {
+                                                                            e.target.style.backgroundColor = 'var(--alis-light-gray)';
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    ✕
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* CLI Command */}
+                                <div className="bg-slate-900 rounded-lg shadow p-6 text-white">
+                                    <p className="text-sm font-medium text-slate-400 mb-2">Run Same Analysis via CLI:</p>
+                                    <div className="bg-slate-800 rounded p-3 font-mono text-sm overflow-x-auto">
+                                        {getCLICommand()}
+                                    </div>
+                                    <button
+                                        onClick={() => navigator.clipboard.writeText(getCLICommand())}
+                                        className="mt-2 px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs font-medium transition-colors"
+                                    >
+                                        Copy Command
+                                    </button>
+                                </div>
+
+                                {/* New Upload */}
+                                <button
+                                    onClick={() => {
+                                        setResults(null);
+                                        setUploadedFile(null);
+                                        setUserActions({});
+                                    }}
+                                    className="w-full py-3 rounded-lg transition-colors font-medium text-white"
+                                    style={{
+                                        backgroundColor: 'var(--alis-light-gray)',
+                                        color: 'var(--alis-gray)',
+                                        border: `2px solid var(--alis-orange)`
+                                    }}
+                                    onMouseEnter={(e) => e.target.style.backgroundColor = 'var(--alis-gold)'}
+                                    onMouseLeave={(e) => e.target.style.backgroundColor = 'var(--alis-light-gray)'}
+                                >
+                                    Upload Another PDF
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Empty State */}
+                        {!uploadedFile && !results && (
+                            <div className="text-center py-12">
+                                <p className="text-slate-600">Upload a PDF to get started</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<ALISFormMarkupUI />);
+    </script>
+</body>
+</html>
