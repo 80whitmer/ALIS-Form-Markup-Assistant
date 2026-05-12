@@ -24,6 +24,7 @@ Output: JSON with text regions and coordinates
 import sys
 import json
 import argparse
+import numpy as np
 from pathlib import Path
 
 try:
@@ -87,8 +88,11 @@ def extract_text_with_coordinates(pdf_path):
             print(f"[ocr-extractor] Extracting text from page {page_num}/{len(images)}...", file=sys.stderr)
 
             try:
+                # Convert PIL Image to numpy array (EasyOCR expects numpy array)
+                image_array = np.array(image)
+
                 # Run EasyOCR on the image
-                results = reader.readtext(image, detail=1)  # detail=1 gives us bounding boxes
+                results = reader.readtext(image_array, detail=1)  # detail=1 gives us bounding boxes
 
                 text_regions = []
 

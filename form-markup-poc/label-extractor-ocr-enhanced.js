@@ -48,8 +48,15 @@ async function extractTextWithCoordinates(pdfBuffer) {
 
       console.log(`[ocr-enhanced] Spawning Tesseract OCR process: ${pythonScriptPath} ${tmpPdfPath}`);
 
+      const env = {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',  // Critical: fixes Windows console Unicode issues
+        PYTHONUNBUFFERED: '1'       // Unbuffered output for real-time logging
+      };
+
       const pythonProcess = spawn('python', [pythonScriptPath, tmpPdfPath], {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env
       });
 
       let stdout = '';
