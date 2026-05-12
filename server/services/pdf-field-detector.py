@@ -45,9 +45,88 @@ except ImportError:
         sys.exit(1)
 
 
+def process_field_recursive(field_ref, field_index, fields, page_map):
+    """
+    Recursively process fields, including nested fields in groups.
+
+    Args:
+        field_ref: Field reference to process
+        field_index: Current field index counter
+        fields: List to accumulate results
+        page_map: Map of object IDs to page numbers
+    """
+    try:
+        # Get field name
+        if '/T' not in field_ref:
+            return field_index
+
+        field_name = str(field_ref['/T'])
+
+        # Determine field type
+        field_type = 'unknown'
+        if '/FT' in field_ref:
+            ft = str(field_ref['/FT']).lower()
+            if 'sig' in ft:
+                field_type = 'signature'
+            elif 'tx' in ft:
+                field_type = 'text'
+            elif 'ch' in ft:
+                field_type = 'checkbox'
+            elif 'btn' in ft:
+                field_type = 'button'
+
+        # Get field position and page number
+        x, y, width, height = 0, 0, 0, 0
+        field_page = 1
+
+        # Check for widget annotations to get position
+        if '/Kids' in field_ref:
+            # Field group - process children recursively
+            kids = field_ref['/Kids']
+            for kid in kids:
+                if isinstance(kid, pikepdf.Object):
+                    kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
+                    field_index = process_field_recursive(kid_obj, field_index, fields, page_map)
+            return field_index
+        else:
+            # Leaf field - extract position
+            if '/Rect' in field_ref:
+                rect = field_ref['/Rect']
+                x = float(rect[0])
+                y = float(rect[1])
+                width = float(rect[2]) - float(rect[0])
+                height = float(rect[3]) - float(rect[1])
+
+        # Try to determine page from page map
+        try:
+            if hasattr(field_ref, 'objgen'):
+                obj_id = field_ref.objgen[0]
+                if obj_id in page_map:
+                    field_page = page_map[obj_id]
+        except:
+            pass
+
+        fields.append({
+            'field_name': field_name,
+            'field_type': field_type,
+            'field_page': field_page,
+            'field_index': field_index,
+            'x': int(x),
+            'y': int(y),
+            'width': int(width),
+            'height': int(height)
+        })
+
+        return field_index + 1
+
+    except Exception as e:
+        print(f"[field-detector] Warning: Could not process field: {e}", file=sys.stderr)
+        return field_index
+
+
 def detect_form_fields(pdf_path):
     """
-    Detect form fields in a PDF document.
+    Detect form fields in a PDF document, including nested fields.
 
     Args:
         pdf_path: Path to input PDF file
@@ -61,6 +140,17 @@ def detect_form_fields(pdf_path):
         with pikepdf.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
             print(f"[field-detector] PDF has {total_pages} pages", file=sys.stderr)
+
+            # Build map of object IDs to page numbers
+            page_map = {}
+            for page_num, page in enumerate(pdf.pages, start=1):
+                if '/Annots' in page:
+                    for annot in page['/Annots']:
+                        try:
+                            if hasattr(annot, 'objgen'):
+                                page_map[annot.objgen[0]] = page_num
+                        except:
+                            pass
 
             fields = []
             field_index = 0
@@ -85,88 +175,9 @@ def detect_form_fields(pdf_path):
 
             field_refs = acroform['/Fields']
 
-            # Process each field
+            # Process each top-level field recursively (handles nested fields in groups)
             for field_ref in field_refs:
-                try:
-                    # Get field name
-                    if '/T' not in field_ref:
-                        continue
-
-                    field_name = str(field_ref['/T'])
-
-                    # Determine field type from Subtype or FT
-                    field_type = 'unknown'
-                    if '/FT' in field_ref:
-                        ft = str(field_ref['/FT']).lower()
-                        if 'sig' in ft:
-                            field_type = 'signature'
-                        elif 'tx' in ft:
-                            field_type = 'text'
-                        elif 'ch' in ft:
-                            field_type = 'checkbox'
-                        elif 'btn' in ft:
-                            field_type = 'button'
-
-                    # Get field position and page number
-                    x, y, width, height = 0, 0, 0, 0
-                    field_page = 1
-
-                    # Check if field has widget annotation
-                    if '/Kids' in field_ref:
-                        # Field has multiple widgets (multi-page field)
-                        kids = field_ref['/Kids']
-                        if len(kids) > 0:
-                            widget = kids[0]
-                            if '/Rect' in widget:
-                                rect = widget['/Rect']
-                                x = float(rect[0])
-                                y = float(rect[1])
-                                width = float(rect[2]) - float(rect[0])
-                                height = float(rect[3]) - float(rect[1])
-
-                            # Find which page contains this widget
-                            for page_num, page in enumerate(pdf.pages, start=1):
-                                if '/Annots' in page:
-                                    for annot in page['/Annots']:
-                                        annot_obj = annot.get_object() if hasattr(annot, 'get_object') else annot
-                                        if annot_obj is widget or (hasattr(widget, 'objgen') and hasattr(annot_obj, 'objgen') and widget.objgen == annot_obj.objgen):
-                                            field_page = page_num
-                                            break
-                    else:
-                        # Single widget field
-                        if '/Rect' in field_ref:
-                            rect = field_ref['/Rect']
-                            x = float(rect[0])
-                            y = float(rect[1])
-                            width = float(rect[2]) - float(rect[0])
-                            height = float(rect[3]) - float(rect[1])
-
-                        # Find which page contains this field's annotation
-                        for page_num, page in enumerate(pdf.pages, start=1):
-                            if '/Annots' in page:
-                                for annot in page['/Annots']:
-                                    annot_obj = annot.get_object() if hasattr(annot, 'get_object') else annot
-                                    if annot_obj is field_ref or (hasattr(field_ref, 'objgen') and hasattr(annot_obj, 'objgen') and field_ref.objgen == annot_obj.objgen):
-                                        field_page = page_num
-                                        break
-
-                    fields.append({
-                        'field_name': field_name,
-                        'field_type': field_type,
-                        'field_page': field_page,
-                        'field_index': field_index,
-                        'x': int(x),
-                        'y': int(y),
-                        'width': int(width),
-                        'height': int(height)
-                    })
-
-                    field_index += 1
-                    print(f"[field-detector] Found field: {field_name} ({field_type}) on page {field_page}", file=sys.stderr)
-
-                except Exception as e:
-                    print(f"[field-detector] Warning: Could not process field: {e}")
-                    continue
+                field_index = process_field_recursive(field_ref, field_index, fields, page_map)
 
             print(f"[field-detector] Total fields detected: {len(fields)}", file=sys.stderr)
 

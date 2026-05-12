@@ -148,7 +148,7 @@ async function processFormMarkupJob(jobData) {
       try {
         const pdfBuffer = fs.readFileSync(input_pdf_path);
 
-        const availableSigners = signers && signers.length > 0 ? signers : ['resident', 'staff', 'admin', 'family'];
+        const availableSigners = signers && signers.length > 0 ? signers : ['resident', 'responsible party', 'staff', 'family', 'admin', 'physician', 'medical provider'];
 
         const labelResults = await extractSignerLabels(
           pdfBuffer,

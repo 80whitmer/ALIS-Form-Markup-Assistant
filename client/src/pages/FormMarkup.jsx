@@ -948,17 +948,6 @@ function FormMarkup() {
               </table>
             </div>
           )}
-
-          {/* OCR Limitation Notice */}
-          <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded text-sm">
-            <strong>⚠️ Current Limitation - Confidence & Signer Detection:</strong>
-            <p className="text-gray-700 mt-2">
-              The system currently uses <strong>field names only</strong> for signer detection (e.g., "Signature1" becomes "signature"). It does NOT perform actual OCR on the PDF to read text like "Resident" or "Responsible Party" near fields.
-            </p>
-            <p className="text-gray-600 mt-2 text-xs">
-              <strong>To enable proper signer detection:</strong> We need to implement PDF rendering + Tesseract OCR to extract actual text from the PDF. This would let the system see "Resident" text next to fields and automatically assign the correct signer with high confidence. The OCR Search Radius setting is prepared but not yet active.
-            </p>
-          </div>
         </>
       )}
     </div>

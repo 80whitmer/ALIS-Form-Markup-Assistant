@@ -257,6 +257,15 @@ function calculateConfidence(distance, radius, zoneBoost = 1.0) {
 function findSignersNearField(pageTexts, field, signerKeywords, searchRadius) {
   const matches = [];
 
+  // Debug logging
+  console.log(`[ocr-enhanced-debug] Field: ${field.field_name} on page ${field.field_page}`);
+  console.log(`[ocr-enhanced-debug] Searching for signers: ${signerKeywords.join(', ')}`);
+  console.log(`[ocr-enhanced-debug] Available text items on page: ${pageTexts.length}`);
+
+  if (pageTexts.length > 0) {
+    console.log(`[ocr-enhanced-debug] Sample texts: ${pageTexts.slice(0, 3).map(t => `"${t.text}"`).join(', ')}`);
+  }
+
   pageTexts.forEach(textItem => {
     const normalizedText = normalizeText(textItem.text);
 
@@ -265,6 +274,7 @@ function findSignersNearField(pageTexts, field, signerKeywords, searchRadius) {
       const normalizedKeyword = normalizeText(keyword);
 
       if (normalizedText.includes(normalizedKeyword)) {
+        console.log(`[ocr-enhanced-debug] ✓ Match found: "${keyword}" in "${textItem.text}"`);
         const { distance, zone, zoneBoost } = calculateZoneAndDistance(field, textItem);
 
         // Only include if within search radius

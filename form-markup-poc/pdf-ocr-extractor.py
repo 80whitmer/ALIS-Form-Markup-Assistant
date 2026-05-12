@@ -28,31 +28,31 @@ try:
     import pytesseract
     from pytesseract import Output
 except ImportError:
-    print("[ocr-extractor] pytesseract not found, attempting to install...")
+    print("[ocr-extractor] pytesseract not found, attempting to install...", file=sys.stderr)
     import subprocess
     try:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pytesseract', '--quiet'])
         import pytesseract
         from pytesseract import Output
-        print("[ocr-extractor] pytesseract installed successfully")
+        print("[ocr-extractor] pytesseract installed successfully", file=sys.stderr)
     except Exception as e:
-        print(f"[ocr-extractor] ERROR: Could not install pytesseract: {e}")
-        print(f"[ocr-extractor] Please install manually: pip install pytesseract")
-        print(f"[ocr-extractor] Also install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
+        print(f"[ocr-extractor] ERROR: Could not install pytesseract: {e}", file=sys.stderr)
+        print(f"[ocr-extractor] Please install manually: pip install pytesseract", file=sys.stderr)
+        print(f"[ocr-extractor] Also install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki", file=sys.stderr)
         sys.exit(1)
 
 try:
     from pdf2image import convert_from_path
 except ImportError:
-    print("[ocr-extractor] pdf2image not found, attempting to install...")
+    print("[ocr-extractor] pdf2image not found, attempting to install...", file=sys.stderr)
     import subprocess
     try:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pdf2image', '--quiet'])
         from pdf2image import convert_from_path
-        print("[ocr-extractor] pdf2image installed successfully")
+        print("[ocr-extractor] pdf2image installed successfully", file=sys.stderr)
     except Exception as e:
-        print(f"[ocr-extractor] ERROR: Could not install pdf2image: {e}")
-        print(f"[ocr-extractor] Please install manually: pip install pdf2image")
+        print(f"[ocr-extractor] ERROR: Could not install pdf2image: {e}", file=sys.stderr)
+        print(f"[ocr-extractor] Please install manually: pip install pdf2image", file=sys.stderr)
         sys.exit(1)
 
 
@@ -67,16 +67,20 @@ def extract_text_with_coordinates(pdf_path):
         dict: Pages with text regions containing text and coordinates
     """
     try:
-        print(f"[ocr-extractor] Converting PDF to images: {pdf_path}")
+        print(f"[ocr-extractor] Converting PDF to images: {pdf_path}", file=sys.stderr)
+
+        # Explicitly specify Poppler path (Windows installation)
+        poppler_path = r"C:\poppler\poppler-26.02.0\Library\bin"
 
         # Convert PDF to images (one image per page)
-        images = convert_from_path(pdf_path, dpi=150)
-        print(f"[ocr-extractor] Converted {len(images)} pages to images")
+        # Pass poppler_path explicitly to avoid PATH issues
+        images = convert_from_path(pdf_path, dpi=150, poppler_path=poppler_path)
+        print(f"[ocr-extractor] Converted {len(images)} pages to images", file=sys.stderr)
 
         pages = []
 
         for page_num, image in enumerate(images, start=1):
-            print(f"[ocr-extractor] Extracting text from page {page_num}/{len(images)}...")
+            print(f"[ocr-extractor] Extracting text from page {page_num}/{len(images)}...", file=sys.stderr)
 
             try:
                 # Extract text with detailed data (includes coordinates)
@@ -103,7 +107,7 @@ def extract_text_with_coordinates(pdf_path):
                     }
                     text_regions.append(region)
 
-                print(f"[ocr-extractor] Page {page_num}: Found {len(text_regions)} text regions")
+                print(f"[ocr-extractor] Page {page_num}: Found {len(text_regions)} text regions", file=sys.stderr)
 
                 pages.append({
                     'page': page_num,
@@ -111,7 +115,7 @@ def extract_text_with_coordinates(pdf_path):
                 })
 
             except Exception as e:
-                print(f"[ocr-extractor] Warning: Error extracting page {page_num}: {e}")
+                print(f"[ocr-extractor] Warning: Error extracting page {page_num}: {e}", file=sys.stderr)
                 pages.append({
                     'page': page_num,
                     'text_regions': []
@@ -124,9 +128,9 @@ def extract_text_with_coordinates(pdf_path):
         }
 
     except Exception as e:
-        print(f"[ocr-extractor] ERROR: {str(e)}")
+        print(f"[ocr-extractor] ERROR: {str(e)}", file=sys.stderr)
         import traceback
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stderr)
         return {
             'status': 'error',
             'error': str(e)
@@ -142,10 +146,10 @@ def main():
     # Check if file exists
     pdf_path = args.pdf_path
     if not Path(pdf_path).exists():
-        print(f"[ocr-extractor] ERROR: File not found: {pdf_path}")
+        print(f"[ocr-extractor] ERROR: File not found: {pdf_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[ocr-extractor] Starting OCR extraction: {pdf_path}")
+    print(f"[ocr-extractor] Starting OCR extraction: {pdf_path}", file=sys.stderr)
 
     result = extract_text_with_coordinates(pdf_path)
 
