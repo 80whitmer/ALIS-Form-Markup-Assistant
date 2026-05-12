@@ -27,6 +27,8 @@ from pathlib import Path
 try:
     import pytesseract
     from pytesseract import Output
+    # Set explicit path to Tesseract binary for Windows
+    pytesseract.pytesseract.pytesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 except ImportError:
     print("[ocr-extractor] pytesseract not found, attempting to install...", file=sys.stderr)
     import subprocess
