@@ -28,7 +28,31 @@ try:
     import pytesseract
     from pytesseract import Output
     # Set explicit path to Tesseract binary for Windows
-    pytesseract.pytesseract.pytesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    # Try multiple common installation locations
+    import os
+    tesseract_paths = [
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+        os.path.expandvars(r'%USERPROFILE%\AppData\Local\Tesseract-OCR\tesseract.exe'),
+        r'C:\tesseract\tesseract.exe',
+    ]
+
+    tesseract_found = False
+    for path in tesseract_paths:
+        if os.path.exists(path):
+            pytesseract.pytesseract.pytesseract_cmd = path
+            # Also set TESSDATA_PREFIX for pytesseract to find language files
+            tessdata_path = os.path.join(os.path.dirname(path), 'tessdata')
+            if os.path.exists(tessdata_path):
+                os.environ['TESSDATA_PREFIX'] = tessdata_path
+                print(f"[ocr-extractor] Set TESSDATA_PREFIX to: {tessdata_path}", file=sys.stderr)
+            tesseract_found = True
+            print(f"[ocr-extractor] Found Tesseract at: {path}", file=sys.stderr)
+            break
+
+    if not tesseract_found:
+        print(f"[ocr-extractor] WARNING: Tesseract not found at any expected path. Tried: {', '.join(tesseract_paths)}", file=sys.stderr)
+        print(f"[ocr-extractor] Attempting to use system PATH...", file=sys.stderr)
 except ImportError:
     print("[ocr-extractor] pytesseract not found, attempting to install...", file=sys.stderr)
     import subprocess
