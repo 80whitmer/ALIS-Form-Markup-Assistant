@@ -156,14 +156,28 @@ def main():
     parser = argparse.ArgumentParser(description='Update form fields in a PDF')
     parser.add_argument('input_pdf', help='Input PDF file path')
     parser.add_argument('output_pdf', help='Output PDF file path')
-    parser.add_argument('--suggestions', help='JSON string with field suggestions')
+    parser.add_argument('--suggestions', help='JSON string with field suggestions (deprecated, use --suggestions-file)')
+    parser.add_argument('--suggestions-file', help='Path to JSON file with field suggestions')
 
     args = parser.parse_args()
 
     # Get suggestions
     suggestions = []
 
-    if args.suggestions:
+    if args.suggestions_file:
+        # Read suggestions from file (preferred method to avoid command-line length limits)
+        try:
+            with open(args.suggestions_file, 'r', encoding='utf-8') as f:
+                suggestions = json.load(f)
+            print(f"[field-updater] Loaded {len(suggestions)} suggestions from file")
+        except FileNotFoundError:
+            print(f"[field-updater] ERROR: Suggestions file not found: {args.suggestions_file}")
+            sys.exit(1)
+        except json.JSONDecodeError as e:
+            print(f"[field-updater] ERROR: Invalid JSON in suggestions file: {e}")
+            sys.exit(1)
+    elif args.suggestions:
+        # Fallback to command-line JSON string (legacy method)
         try:
             suggestions = json.loads(args.suggestions)
         except json.JSONDecodeError as e:

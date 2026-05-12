@@ -13,6 +13,8 @@ const { PDFDocument } = require('pdf-lib');
  */
 async function applyFieldUpdates(pdfPath, suggestions) {
   return new Promise((resolve) => {
+    let tempSuggestionsFile = null;
+
     try {
       // Check if pdf-field-updater.py exists
       const scriptsDir = path.dirname(__filename);
@@ -34,10 +36,18 @@ async function applyFieldUpdates(pdfPath, suggestions) {
         return;
       }
 
-      const suggestionsJson = JSON.stringify(approved);
-      const args = [fieldUpdaterPath, pdfPath, pdfPath, '--suggestions', suggestionsJson];
+      // Write suggestions to temp file instead of command-line arg (avoids ENAMETOOLONG)
+      const tmpDir = path.join(path.dirname(__filename), '..', 'tmp');
+      if (!fs.existsSync(tmpDir)) {
+        fs.mkdirSync(tmpDir, { recursive: true });
+      }
 
-      console.log(`[applier] Spawning field updater: python ${fieldUpdaterPath} ... --suggestions <json>`);
+      tempSuggestionsFile = path.join(tmpDir, `suggestions-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.json`);
+      fs.writeFileSync(tempSuggestionsFile, JSON.stringify(approved, null, 2));
+
+      const args = [fieldUpdaterPath, pdfPath, pdfPath, '--suggestions-file', tempSuggestionsFile];
+
+      console.log(`[applier] Spawning field updater: python ${fieldUpdaterPath} ... --suggestions-file ${tempSuggestionsFile}`);
 
       const pythonProcess = spawn('python', args, {
         stdio: ['pipe', 'pipe', 'pipe']
@@ -57,6 +67,15 @@ async function applyFieldUpdates(pdfPath, suggestions) {
       });
 
       pythonProcess.on('close', (code) => {
+        // Clean up temp file
+        if (tempSuggestionsFile && fs.existsSync(tempSuggestionsFile)) {
+          try {
+            fs.unlinkSync(tempSuggestionsFile);
+          } catch (e) {
+            console.warn('[applier] Could not delete temp suggestions file:', e.message);
+          }
+        }
+
         if (code === 0) {
           console.log('[applier] ✓ Field updates completed successfully');
           resolve(true);
@@ -68,12 +87,30 @@ async function applyFieldUpdates(pdfPath, suggestions) {
       });
 
       pythonProcess.on('error', (err) => {
+        // Clean up temp file
+        if (tempSuggestionsFile && fs.existsSync(tempSuggestionsFile)) {
+          try {
+            fs.unlinkSync(tempSuggestionsFile);
+          } catch (e) {
+            console.warn('[applier] Could not delete temp suggestions file:', e.message);
+          }
+        }
+
         console.warn('[applier] Could not spawn Python process:', err.message);
         console.warn('[applier] Field updates skipped (Python may not be available)');
         resolve(true);  // Don't fail if Python isn't available
       });
 
     } catch (err) {
+      // Clean up temp file
+      if (tempSuggestionsFile && fs.existsSync(tempSuggestionsFile)) {
+        try {
+          fs.unlinkSync(tempSuggestionsFile);
+        } catch (e) {
+          console.warn('[applier] Could not delete temp suggestions file:', e.message);
+        }
+      }
+
       console.warn('[applier] Field updates skipped:', err.message);
       resolve(true);  // Don't fail on any errors
     }

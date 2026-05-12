@@ -10,7 +10,7 @@ function FormMarkup() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [applying, setApplying] = useState(false);
-  const [selectedPage, setSelectedPage] = useState(1);
+  const [selectedPage, setSelectedPage] = useState('ALL');
 
   // State for accordion and bulk operations
   const [expandedRows, setExpandedRows] = useState(new Set());
@@ -22,6 +22,13 @@ function FormMarkup() {
     border: null
   });
   const [showBulkPanel, setShowBulkPanel] = useState(false);
+
+  // New filter and pagination state
+  const [typeFilter, setTypeFilter] = useState('');
+  const [signerFilter, setSignerFilter] = useState('');
+  const [bulkSignerValue, setBulkSignerValue] = useState('');
+  const [showBulkSignerPanel, setShowBulkSignerPanel] = useState(false);
+  const PAGINATION_COLUMNS = 10;
 
   useEffect(() => {
     fetchJobDetails();
@@ -221,6 +228,46 @@ function FormMarkup() {
     alert(`Properties applied to ${selectedFields.size} field(s)`);
   };
 
+  // Bulk signer assignment (auto-regenerates codes)
+  const handleApplyBulkSigner = () => {
+    if (selectedFields.size === 0 || !bulkSignerValue) {
+      alert('Please select fields and choose a signer');
+      return;
+    }
+
+    const updated = [...suggestions];
+    selectedFields.forEach(index => {
+      updated[index].signer = bulkSignerValue;
+      // Auto-regenerate suggested code with new signer
+      const newAnchor = generateAnchorFromSigner(bulkSignerValue, updated[index].field_type, index);
+      updated[index].anchor_name = newAnchor;
+      updated[index].suggested_code = newAnchor;
+    });
+
+    setSuggestions(updated);
+    setShowBulkSignerPanel(false);
+    setBulkSignerValue('');
+    alert(`Signer and codes updated for ${selectedFields.size} field(s)`);
+  };
+
+  // Get unique types and signers for filter dropdowns
+  const getUniqueTypes = () => {
+    return [...new Set(suggestions.map(s => s.field_type).filter(Boolean))].sort();
+  };
+
+  const getUniqueSigners = () => {
+    return [...new Set(suggestions.map(s => s.signer).filter(Boolean))].sort();
+  };
+
+  // Apply filters to suggestions
+  const getFilteredSuggestions = () => {
+    return suggestions.filter(s => {
+      if (typeFilter && s.field_type !== typeFilter) return false;
+      if (signerFilter && s.signer !== signerFilter) return false;
+      return true;
+    });
+  };
+
   const handleApprove = async () => {
     setApplying(true);
     try {
@@ -264,8 +311,16 @@ function FormMarkup() {
     );
   }
 
-  const pageNumbers = [...new Set(suggestions.map(s => s.field_page || 1))].sort((a, b) => a - b);
-  const pageSuggestions = suggestions.filter(s => (s.field_page || 1) === selectedPage);
+  // Get all pages, page suggestions with filters applied
+  const allPageNumbers = [...new Set(suggestions.map(s => s.field_page || 1))].sort((a, b) => a - b);
+  const filteredSuggestions = getFilteredSuggestions();
+
+  // Show all filtered suggestions by default, or filter by page if page is selected
+  const displaySuggestions = selectedPage === null || selectedPage === 'ALL'
+    ? filteredSuggestions
+    : filteredSuggestions.filter(s => (s.field_page || 1) === selectedPage);
+
+  const pageSuggestions = displaySuggestions;
   const configuredSigners = job && job.signers ? JSON.parse(job.signers) : ['Resident', 'Staff'];
   const pageIndices = pageSuggestions.map(s => suggestions.indexOf(s));
   const selectedOnPage = pageIndices.filter(i => selectedFields.has(i)).length;
@@ -323,61 +378,202 @@ function FormMarkup() {
         </div>
       ) : (
         <>
-          {/* Page Navigation */}
-          <div className="flex gap-2 mb-6 items-center justify-between">
-            <div className="flex gap-2 items-center">
-              <span className="text-sm font-medium text-gray-600">Pages:</span>
-              {pageNumbers.map(page => (
+          {/* Filters */}
+          <div className="bg-white rounded-lg shadow p-4 mb-6">
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-2">Type Filter</label>
+                <select
+                  value={typeFilter}
+                  onChange={(e) => {
+                    setTypeFilter(e.target.value);
+                    setSelectedPage(1);
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500"
+                >
+                  <option value="">All Types</option>
+                  {getUniqueTypes().map(type => (
+                    <option key={type} value={type}>{type}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-2">Signer Filter</label>
+                <select
+                  value={signerFilter}
+                  onChange={(e) => {
+                    setSignerFilter(e.target.value);
+                    setSelectedPage(1);
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500"
+                >
+                  <option value="">All Signers</option>
+                  {getUniqueSigners().map(signer => (
+                    <option key={signer} value={signer}>{signer}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-2">Results</label>
+                <div className="px-3 py-2 bg-gray-100 rounded text-sm font-semibold">
+                  {filteredSuggestions.length} / {suggestions.length}
+                </div>
+              </div>
+
+              <div>
                 <button
-                  key={page}
                   onClick={() => {
-                    setSelectedPage(page);
+                    setTypeFilter('');
+                    setSignerFilter('');
+                    setSelectedPage(1);
+                  }}
+                  className="mt-6 w-full px-3 py-2 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400 transition"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Bulk Signer Panel */}
+          {selectedFields.size > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-blue-900">
+                  {selectedFields.size} field{selectedFields.size !== 1 ? 's' : ''} selected
+                </span>
+              </div>
+
+              {showBulkSignerPanel ? (
+                <div className="mt-4 flex gap-3 items-end">
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-blue-900 mb-2">Bulk Assign Signer</label>
+                    <select
+                      value={bulkSignerValue}
+                      onChange={(e) => setBulkSignerValue(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-blue-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Choose signer...</option>
+                      {configuredSigners.map(signer => (
+                        <option key={signer} value={signer}>{signer}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    onClick={handleApplyBulkSigner}
+                    disabled={!bulkSignerValue}
+                    className={`px-6 py-2 rounded text-sm font-medium transition-colors ${
+                      bulkSignerValue
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    }`}
+                  >
+                    Apply Signer to {selectedFields.size}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowBulkSignerPanel(false);
+                      setBulkSignerValue('');
+                    }}
+                    className="px-4 py-2 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => setShowBulkSignerPanel(true)}
+                    className="px-4 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 transition"
+                  >
+                    Bulk Assign Signer
+                  </button>
+                  <button
+                    onClick={() => setShowBulkPanel(!showBulkPanel)}
+                    className="px-4 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 transition"
+                  >
+                    Bulk Set Properties
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Page Navigation with Compact Grid Pagination */}
+          <div className="flex gap-4 mb-6 items-start">
+            <div className="flex-1">
+              <span className="text-xs font-semibold text-gray-600 block mb-2">Navigation (Pages):</span>
+              <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${PAGINATION_COLUMNS}, minmax(0, 1fr))`, maxWidth: '600px' }}>
+                {/* ALL Button */}
+                <button
+                  onClick={() => {
+                    setSelectedPage('ALL');
                     setExpandedRows(new Set());
                     setShowCurrentValuesOnly(false);
                   }}
-                  className="px-3 py-1 rounded transition text-sm"
+                  className="px-2 py-1 rounded transition text-xs font-medium"
                   style={{
-                    backgroundColor: selectedPage === page ? '#FF9800' : '#E0E0E0',
-                    color: selectedPage === page ? 'white' : '#666',
-                    fontWeight: selectedPage === page ? '600' : '500'
+                    backgroundColor: selectedPage === 'ALL' ? '#FF9800' : '#E0E0E0',
+                    color: selectedPage === 'ALL' ? 'white' : '#666'
                   }}
-                  title={`Page ${page} (${suggestions.filter(s => (s.field_page || 1) === page).length} fields)`}
+                  title={`Show all ${filteredSuggestions.length} filtered fields`}
                 >
-                  {page}
+                  ALL
                 </button>
-              ))}
-              <span className="text-xs text-gray-500 ml-2">
-                ({pageSuggestions.length} fields on this page)
+
+                {/* Page Number Buttons */}
+                {allPageNumbers.map(page => {
+                  const pageHasFilterType = typeFilter && suggestions
+                    .filter(s => (s.field_page || 1) === page && s.field_type === typeFilter)
+                    .length > 0;
+
+                  return (
+                    <button
+                      key={page}
+                      onClick={() => {
+                        setSelectedPage(page);
+                        setExpandedRows(new Set());
+                        setShowCurrentValuesOnly(false);
+                      }}
+                      className="px-2 py-1 rounded transition text-xs font-medium relative"
+                      style={{
+                        backgroundColor: selectedPage === page ? '#FF9800' : '#E0E0E0',
+                        color: selectedPage === page ? 'white' : '#666'
+                      }}
+                      title={`Page ${page} (${filteredSuggestions.filter(s => (s.field_page || 1) === page).length} fields)`}
+                    >
+                      {page}
+                      {pageHasFilterType && (
+                        <span
+                          className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"
+                          title={`Page ${page} contains ${typeFilter} fields`}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="text-xs text-gray-500 mt-1 block">
+                Showing {pageSuggestions.length} of {filteredSuggestions.length} filtered ({suggestions.length} total)
               </span>
             </div>
 
             {/* View Mode Toggle */}
-            <button
-              onClick={() => setShowCurrentValuesOnly(!showCurrentValuesOnly)}
-              className="px-4 py-2 rounded text-sm transition"
-              style={{
-                backgroundColor: showCurrentValuesOnly ? '#4CAF50' : '#E0E0E0',
-                color: showCurrentValuesOnly ? 'white' : '#666',
-                fontWeight: '500'
-              }}
-            >
-              {showCurrentValuesOnly ? '✓ Current Values Only' : 'View Current Values'}
-            </button>
-
-            {/* Bulk Actions */}
-            {selectedFields.size > 0 && (
-              <div className="flex gap-2 items-center">
-                <span className="text-sm text-gray-600">
-                  {selectedFields.size} field{selectedFields.size !== 1 ? 's' : ''} selected
-                </span>
-                <button
-                  onClick={() => setShowBulkPanel(!showBulkPanel)}
-                  className="px-4 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 transition"
-                >
-                  Bulk Assign
-                </button>
-              </div>
-            )}
+            <div className="pt-5">
+              <button
+                onClick={() => setShowCurrentValuesOnly(!showCurrentValuesOnly)}
+                className="px-4 py-2 rounded text-sm transition whitespace-nowrap"
+                style={{
+                  backgroundColor: showCurrentValuesOnly ? '#4CAF50' : '#E0E0E0',
+                  color: showCurrentValuesOnly ? 'white' : '#666',
+                  fontWeight: '500'
+                }}
+              >
+                {showCurrentValuesOnly ? '✓ Current Only' : 'View Values'}
+              </button>
+            </div>
           </div>
 
           {/* Bulk Properties Panel */}
