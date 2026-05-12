@@ -34,14 +34,14 @@ from pathlib import Path
 try:
     import pikepdf
 except ImportError:
-    print("[field-detector] pikepdf not found, attempting to install...")
+    print("[field-detector] pikepdf not found, attempting to install...", file=sys.stderr)
     try:
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pikepdf', '--quiet'])
         import pikepdf
-        print("[field-detector] pikepdf installed successfully")
+        print("[field-detector] pikepdf installed successfully", file=sys.stderr)
     except Exception as e:
-        print(f"[field-detector] ERROR: Could not install pikepdf: {e}")
-        print(f"[field-detector] Please install manually: {sys.executable} -m pip install pikepdf")
+        print(f"[field-detector] ERROR: Could not install pikepdf: {e}", file=sys.stderr)
+        print(f"[field-detector] Please install manually: {sys.executable} -m pip install pikepdf", file=sys.stderr)
         sys.exit(1)
 
 
@@ -56,18 +56,18 @@ def detect_form_fields(pdf_path):
         dict: Detection results with fields list and page count
     """
     try:
-        print(f"[field-detector] Opening PDF: {pdf_path}")
+        print(f"[field-detector] Opening PDF: {pdf_path}", file=sys.stderr)
 
         with pikepdf.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
-            print(f"[field-detector] PDF has {total_pages} pages")
+            print(f"[field-detector] PDF has {total_pages} pages", file=sys.stderr)
 
             fields = []
             field_index = 0
 
             # Check if PDF has an AcroForm (form fields)
             if '/AcroForm' not in pdf.Root:
-                print("[field-detector] No AcroForm found in PDF")
+                print("[field-detector] No AcroForm found in PDF", file=sys.stderr)
                 return {
                     'status': 'success',
                     'total_pages': total_pages,
@@ -76,7 +76,7 @@ def detect_form_fields(pdf_path):
 
             acroform = pdf.Root['/AcroForm']
             if '/Fields' not in acroform:
-                print("[field-detector] No form fields found in PDF")
+                print("[field-detector] No form fields found in PDF", file=sys.stderr)
                 return {
                     'status': 'success',
                     'total_pages': total_pages,
@@ -162,13 +162,13 @@ def detect_form_fields(pdf_path):
                     })
 
                     field_index += 1
-                    print(f"[field-detector] Found field: {field_name} ({field_type}) on page {field_page}")
+                    print(f"[field-detector] Found field: {field_name} ({field_type}) on page {field_page}", file=sys.stderr)
 
                 except Exception as e:
                     print(f"[field-detector] Warning: Could not process field: {e}")
                     continue
 
-            print(f"[field-detector] Total fields detected: {len(fields)}")
+            print(f"[field-detector] Total fields detected: {len(fields)}", file=sys.stderr)
 
             return {
                 'status': 'success',
@@ -177,9 +177,9 @@ def detect_form_fields(pdf_path):
             }
 
     except Exception as e:
-        print(f"[field-detector] ERROR: {str(e)}")
+        print(f"[field-detector] ERROR: {str(e)}", file=sys.stderr)
         import traceback
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stderr)
         return {
             'status': 'error',
             'error': str(e),
@@ -197,10 +197,10 @@ def main():
     # Check if file exists
     pdf_path = args.pdf_path
     if not Path(pdf_path).exists():
-        print(f"[field-detector] ERROR: File not found: {pdf_path}")
+        print(f"[field-detector] ERROR: File not found: {pdf_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[field-detector] Starting field detection: {pdf_path}")
+    print(f"[field-detector] Starting field detection: {pdf_path}", file=sys.stderr)
 
     result = detect_form_fields(pdf_path)
 
