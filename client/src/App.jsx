@@ -4,6 +4,7 @@ import Upload from './pages/Upload';
 import JobHistory from './pages/JobHistory';
 import FormMarkup from './pages/FormMarkup';
 import JobDetail from './pages/JobDetail';
+import { APP_VERSION, APP_NAME, APP_TAGLINE } from './config';
 
 function App() {
   return (
@@ -43,7 +44,7 @@ function App() {
       <footer className="bg-white border-t border-gray-200 mt-12">
         <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
           <p className="text-gray-500 text-sm text-center">
-            ALIS Form Markup Assistant v0.1.0 — Compliance & Configuration Made Simple
+            {APP_NAME} {APP_VERSION} — {APP_TAGLINE}
           </p>
         </div>
       </footer>
