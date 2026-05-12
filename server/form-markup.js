@@ -13,14 +13,20 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-// Import enhanced OCR module with directional search
+// Import OCR module with subprocess support for EasyOCR
 let extractSignerLabels;
 try {
-  const labelExtractor = require('../form-markup-poc/label-extractor-ocr-enhanced');
+  const labelExtractor = require('../form-markup-poc/label-extractor-ocr-subprocess');
   extractSignerLabels = labelExtractor.extractSignerLabels || labelExtractor;
 } catch (e) {
-  console.warn('[form-markup] Enhanced OCR module not available:', e.message);
-  extractSignerLabels = null;
+  console.warn('[form-markup] Subprocess OCR module not available, falling back to pdfjs:', e.message);
+  try {
+    const labelExtractor = require('../form-markup-poc/label-extractor-ocr-enhanced');
+    extractSignerLabels = labelExtractor.extractSignerLabels || labelExtractor;
+  } catch (e2) {
+    console.warn('[form-markup] Enhanced OCR module also not available:', e2.message);
+    extractSignerLabels = null;
+  }
 }
 
 /**
