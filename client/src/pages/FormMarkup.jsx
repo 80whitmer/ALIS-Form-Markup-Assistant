@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import axios from 'axios';
-import { Download, CheckCircle, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { Download, ChevronDown, ChevronRight } from 'lucide-react';
 
 function FormMarkup() {
   const { jobId } = useParams();
-  const navigate = useNavigate();
   const [job, setJob] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -16,6 +15,7 @@ function FormMarkup() {
   // State for accordion and bulk operations
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [selectedFields, setSelectedFields] = useState(new Set());
+  const [showCurrentValuesOnly, setShowCurrentValuesOnly] = useState(false);
   const [bulkProperties, setBulkProperties] = useState({
     required: null,
     read_only: null,
@@ -25,12 +25,14 @@ function FormMarkup() {
 
   useEffect(() => {
     fetchJobDetails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     const interval = setInterval(() => {
       if (!job || (job.status !== 'reviewed' && job.status !== 'applied')) {
         fetchJobDetails();
       }
     }, 2000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, job?.status]);
 
   const fetchJobDetails = async () => {
@@ -74,7 +76,6 @@ function FormMarkup() {
             border: suggestion.border || false,
             required: suggestion.required !== undefined ? suggestion.required : false,
             read_only: suggestion.read_only !== undefined ? suggestion.read_only : false,
-            // Debug: Log confidence value
             __debug_confidence: suggestion.confidence
           };
         });
@@ -180,7 +181,6 @@ function FormMarkup() {
   };
 
   const handleSelectAllOnPage = () => {
-    const pageNumbers = [...new Set(suggestions.map(s => s.field_page || 1))].sort((a, b) => a - b);
     const pageSuggestions = suggestions.filter(s => (s.field_page || 1) === selectedPage);
     const pageIndices = pageSuggestions.map(s => suggestions.indexOf(s));
 
@@ -227,7 +227,7 @@ function FormMarkup() {
       const approveSuggestions = suggestions.map(s => ({
         ...s,
         approval_status: 'approved',
-        __debug_confidence: undefined // Remove debug field before sending
+        __debug_confidence: undefined
       }));
 
       const response = await axios.post(`/api/jobs/${jobId}/apply`, {
@@ -324,27 +324,49 @@ function FormMarkup() {
       ) : (
         <>
           {/* Page Navigation */}
-          <div className="flex gap-2 mb-6 items-center">
-            <div className="flex gap-2">
+          <div className="flex gap-2 mb-6 items-center justify-between">
+            <div className="flex gap-2 items-center">
+              <span className="text-sm font-medium text-gray-600">Pages:</span>
               {pageNumbers.map(page => (
                 <button
                   key={page}
-                  onClick={() => setSelectedPage(page)}
-                  className="px-3 py-1 rounded transition"
+                  onClick={() => {
+                    setSelectedPage(page);
+                    setExpandedRows(new Set());
+                    setShowCurrentValuesOnly(false);
+                  }}
+                  className="px-3 py-1 rounded transition text-sm"
                   style={{
                     backgroundColor: selectedPage === page ? '#FF9800' : '#E0E0E0',
                     color: selectedPage === page ? 'white' : '#666',
                     fontWeight: selectedPage === page ? '600' : '500'
                   }}
+                  title={`Page ${page} (${suggestions.filter(s => (s.field_page || 1) === page).length} fields)`}
                 >
-                  Page {page}
+                  {page}
                 </button>
               ))}
+              <span className="text-xs text-gray-500 ml-2">
+                ({pageSuggestions.length} fields on this page)
+              </span>
             </div>
+
+            {/* View Mode Toggle */}
+            <button
+              onClick={() => setShowCurrentValuesOnly(!showCurrentValuesOnly)}
+              className="px-4 py-2 rounded text-sm transition"
+              style={{
+                backgroundColor: showCurrentValuesOnly ? '#4CAF50' : '#E0E0E0',
+                color: showCurrentValuesOnly ? 'white' : '#666',
+                fontWeight: '500'
+              }}
+            >
+              {showCurrentValuesOnly ? '✓ Current Values Only' : 'View Current Values'}
+            </button>
 
             {/* Bulk Actions */}
             {selectedFields.size > 0 && (
-              <div className="ml-auto flex gap-2 items-center">
+              <div className="flex gap-2 items-center">
                 <span className="text-sm text-gray-600">
                   {selectedFields.size} field{selectedFields.size !== 1 ? 's' : ''} selected
                 </span>
@@ -486,205 +508,261 @@ function FormMarkup() {
             </div>
           )}
 
-          {/* Suggestions Table with Accordion */}
-          <div className="bg-white rounded-lg shadow overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 w-12">
-                    <input
-                      type="checkbox"
-                      checked={selectedOnPage === pageIndices.length && pageIndices.length > 0}
-                      onChange={handleSelectAllOnPage}
-                      title="Select all on this page"
-                    />
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 w-8"></th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Type</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Suggested Code</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Signer</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Border</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Required</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Read-Only</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Confidence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageSuggestions.map((suggestion, pageIndex) => {
-                  const fullIndex = suggestions.indexOf(suggestion);
-                  const isSelected = selectedFields.has(fullIndex);
-                  const isExpanded = expandedRows.has(fullIndex);
-                  const confidencePercent = (suggestion.confidence || 0) * 100;
-
-                  return (
-                    <React.Fragment key={suggestion.id}>
-                      {/* Main Row */}
-                      <tr className={`border-b hover:bg-gray-50 ${isSelected ? 'bg-blue-50' : ''}`}>
-                        <td className="px-4 py-3 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => handleToggleFieldSelection(fullIndex)}
-                          />
-                        </td>
-                        <td className="px-4 py-3 text-sm text-center">
-                          <button
-                            onClick={() => toggleRowExpanded(fullIndex)}
-                            className="text-gray-400 hover:text-gray-600"
-                            title={isExpanded ? 'Hide current values' : 'Show current values'}
-                          >
-                            {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                          </button>
-                        </td>
+          {/* Current Values Only View */}
+          {showCurrentValuesOnly ? (
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-blue-100 border-b">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Type</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Field Name (PDF)</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Required</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Read-Only</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Border</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700">Location</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageSuggestions.map((suggestion, pageIndex) => {
+                    const fullIndex = suggestions.indexOf(suggestion);
+                    return (
+                      <tr key={suggestion.id} className="border-b hover:bg-blue-50">
                         <td className="px-4 py-3 text-sm font-semibold" style={{ color: getFieldTypeColor(suggestion.field_type) }}>
                           {suggestion.field_type}
                         </td>
-                        <td className="px-4 py-3 text-sm">
-                          <input
-                            type="text"
-                            value={suggestion.suggested_code || ''}
-                            onChange={(e) => handleUpdateSuggestion(fullIndex, 'suggested_code', e.target.value)}
-                            className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
-                          />
+                        <td className="px-4 py-3 text-sm font-mono bg-gray-100 rounded">
+                          {suggestion.current_field_name || suggestion.field_name || '(unnamed)'}
                         </td>
                         <td className="px-4 py-3 text-sm">
-                          <select
-                            value={suggestion.signer || ''}
-                            onChange={(e) => handleUpdateSuggestion(fullIndex, 'signer', e.target.value)}
-                            className="px-2 py-1 border border-gray-300 rounded text-xs"
-                          >
-                            {configuredSigners.map((signer) => (
-                              <option key={signer} value={signer}>
-                                {signer}
-                              </option>
-                            ))}
-                          </select>
+                          {suggestion.current_required ? '✓ Yes' : '○ No'}
                         </td>
                         <td className="px-4 py-3 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={suggestion.border || false}
-                            onChange={(e) => handleUpdateSuggestion(fullIndex, 'border', e.target.checked)}
-                            title="Field should have a border/outline"
-                          />
+                          {suggestion.current_read_only ? '✓ Yes' : '○ No'}
                         </td>
                         <td className="px-4 py-3 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={suggestion.required || false}
-                            onChange={(e) => handleUpdateSuggestion(fullIndex, 'required', e.target.checked)}
-                          />
+                          {suggestion.current_border ? '✓ Yes' : '○ No'}
                         </td>
-                        <td className="px-4 py-3 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={suggestion.read_only || false}
-                            onChange={(e) => handleUpdateSuggestion(fullIndex, 'read_only', e.target.checked)}
-                          />
-                        </td>
-                        <td className="px-4 py-3 text-sm">
-                          <div className="flex items-center gap-1">
-                            <div className="w-24 bg-gray-200 rounded h-2">
-                              <div
-                                className="bg-green-500 h-2 rounded"
-                                style={{ width: `${confidencePercent}%` }}
-                              />
-                            </div>
-                            <span className="text-xs text-gray-600 min-w-max" title={`OCR match confidence: ${confidencePercent.toFixed(0)}%`}>
-                              {confidencePercent.toFixed(0)}%
-                            </span>
-                          </div>
+                        <td className="px-4 py-3 text-xs text-gray-600">
+                          Page {suggestion.field_page || 1}
                         </td>
                       </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            /* Standard Suggestions Table with Accordion */
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 w-12">
+                      <input
+                        type="checkbox"
+                        checked={selectedOnPage === pageIndices.length && pageIndices.length > 0}
+                        onChange={handleSelectAllOnPage}
+                        title="Select all on this page"
+                      />
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 w-8"></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Type</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Suggested Code</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Signer</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Border</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Required</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Read-Only</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageSuggestions.map((suggestion, pageIndex) => {
+                    const fullIndex = suggestions.indexOf(suggestion);
+                    const isSelected = selectedFields.has(fullIndex);
+                    const isExpanded = expandedRows.has(fullIndex);
+                    const confidencePercent = (suggestion.confidence || 0) * 100;
 
-                      {/* Expanded Row - Current Values */}
-                      {isExpanded && (
-                        <tr className="bg-blue-100 border-b">
-                          <td colSpan="9" className="px-4 py-4">
-                            <div className="grid grid-cols-2 gap-6">
-                              {/* Current Values (left) */}
-                              <div>
-                                <h4 className="font-semibold text-gray-700 mb-3 text-sm">📋 Current (in PDF)</h4>
-                                <div className="space-y-2 text-sm">
-                                  <div>
-                                    <span className="text-gray-600">Field Name:</span>
-                                    <div className="font-mono bg-gray-200 px-2 py-1 rounded text-xs mt-1">
-                                      {suggestion.current_field_name || suggestion.field_name || '(unnamed)'}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Required:</span>
-                                    <div className="mt-1">{suggestion.current_required ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Read-Only:</span>
-                                    <div className="mt-1">{suggestion.current_read_only ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Border:</span>
-                                    <div className="mt-1">{suggestion.current_border ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                </div>
+                    return (
+                      <React.Fragment key={suggestion.id}>
+                        {/* Main Row */}
+                        <tr className={`border-b hover:bg-gray-50 ${isSelected ? 'bg-blue-50' : ''}`}>
+                          <td className="px-4 py-3 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleToggleFieldSelection(fullIndex)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center">
+                            <button
+                              onClick={() => toggleRowExpanded(fullIndex)}
+                              className="text-gray-400 hover:text-gray-600"
+                              title={isExpanded ? 'Hide current values' : 'Show current values'}
+                            >
+                              {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3 text-sm font-semibold" style={{ color: getFieldTypeColor(suggestion.field_type) }}>
+                            {suggestion.field_type}
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <input
+                              type="text"
+                              value={suggestion.suggested_code || ''}
+                              onChange={(e) => handleUpdateSuggestion(fullIndex, 'suggested_code', e.target.value)}
+                              className="w-full px-2 py-1 border border-gray-300 rounded text-xs"
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <select
+                              value={suggestion.signer || ''}
+                              onChange={(e) => handleUpdateSuggestion(fullIndex, 'signer', e.target.value)}
+                              className="px-2 py-1 border border-gray-300 rounded text-xs"
+                            >
+                              {configuredSigners.map((signer) => (
+                                <option key={signer} value={signer}>
+                                  {signer}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={suggestion.border || false}
+                              onChange={(e) => handleUpdateSuggestion(fullIndex, 'border', e.target.checked)}
+                              title="Field should have a border/outline"
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={suggestion.required || false}
+                              onChange={(e) => handleUpdateSuggestion(fullIndex, 'required', e.target.checked)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={suggestion.read_only || false}
+                              onChange={(e) => handleUpdateSuggestion(fullIndex, 'read_only', e.target.checked)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <div className="flex items-center gap-1">
+                              <div className="w-24 bg-gray-200 rounded h-2">
+                                <div
+                                  className="bg-green-500 h-2 rounded"
+                                  style={{ width: `${confidencePercent}%` }}
+                                />
                               </div>
-
-                              {/* Suggested Values (right) */}
-                              <div>
-                                <h4 className="font-semibold text-gray-700 mb-3 text-sm">✏️ Suggested (to apply)</h4>
-                                <div className="space-y-2 text-sm">
-                                  <div>
-                                    <span className="text-gray-600">Field Name:</span>
-                                    <div className="font-mono bg-yellow-100 px-2 py-1 rounded text-xs mt-1">
-                                      {suggestion.suggested_code || '(pending)'}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Required:</span>
-                                    <div className="mt-1">{suggestion.required ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Read-Only:</span>
-                                    <div className="mt-1">{suggestion.read_only ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                  <div>
-                                    <span className="text-gray-600">Border:</span>
-                                    <div className="mt-1">{suggestion.border ? '✓ Yes' : '○ No'}</div>
-                                  </div>
-                                </div>
-                              </div>
+                              <span className="text-xs text-gray-600 min-w-max" title={`OCR match confidence: ${confidencePercent.toFixed(0)}%`}>
+                                {confidencePercent.toFixed(0)}%
+                              </span>
                             </div>
-
-                            {/* Properties Info */}
-                            {getImportantProperties(suggestion.field_properties).length > 0 && (
-                              <div className="mt-4 pt-4 border-t border-blue-300">
-                                <span className="text-xs text-gray-600">Other Properties:</span>
-                                <div className="flex flex-wrap gap-1 mt-2">
-                                  {getImportantProperties(suggestion.field_properties).map((prop) => (
-                                    <span
-                                      key={prop}
-                                      className="px-2 py-1 bg-blue-200 text-blue-700 rounded text-xs font-medium"
-                                    >
-                                      {prop === 'auto_trigger' ? '⚡' : prop === 'password' ? '🔐' : prop === 'multiline' ? '📄' : prop === 'rich_text' ? '✏️' : prop === 'comb' ? '#️⃣' : prop === 'no_export' ? '🚫' : '•'} {prop}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
                           </td>
                         </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
 
-          {/* Debug Info for Confidence */}
-          {suggestions.some(s => s.__debug_confidence !== undefined && s.__debug_confidence !== null) && (
-            <div className="mt-6 p-4 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600">
-              <strong>ℹ️ Debug Note:</strong> Confidence values are being loaded from the database. If all fields show 0%, it means the confidence values weren't calculated during analysis. Check the form-markup analysis phase to ensure OCR label matching confidence is being captured.
+                        {/* Expanded Row - Current Values */}
+                        {isExpanded && (
+                          <tr className="bg-blue-100 border-b">
+                            <td colSpan="9" className="px-4 py-4">
+                              <div className="grid grid-cols-2 gap-6">
+                                {/* Current Values (left) */}
+                                <div>
+                                  <h4 className="font-semibold text-gray-700 mb-3 text-sm">📋 Current (in PDF)</h4>
+                                  <div className="space-y-2 text-sm">
+                                    <div>
+                                      <span className="text-gray-600">Field Name:</span>
+                                      <div className="font-mono bg-gray-200 px-2 py-1 rounded text-xs mt-1">
+                                        {suggestion.current_field_name || suggestion.field_name || '(unnamed)'}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Required:</span>
+                                      <div className="mt-1">{suggestion.current_required ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Read-Only:</span>
+                                      <div className="mt-1">{suggestion.current_read_only ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Border:</span>
+                                      <div className="mt-1">{suggestion.current_border ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                    <div className="pt-2 border-t border-blue-200 text-xs text-gray-500">
+                                      Page {suggestion.field_page || 1}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Suggested Values (right) */}
+                                <div>
+                                  <h4 className="font-semibold text-gray-700 mb-3 text-sm">✏️ Suggested (to apply)</h4>
+                                  <div className="space-y-2 text-sm">
+                                    <div>
+                                      <span className="text-gray-600">Field Name:</span>
+                                      <div className="font-mono bg-yellow-100 px-2 py-1 rounded text-xs mt-1">
+                                        {suggestion.suggested_code || '(pending)'}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Signer:</span>
+                                      <div className="font-semibold mt-1">{suggestion.signer || 'Unassigned'}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Required:</span>
+                                      <div className="mt-1">{suggestion.required ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Read-Only:</span>
+                                      <div className="mt-1">{suggestion.read_only ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                    <div>
+                                      <span className="text-gray-600">Border:</span>
+                                      <div className="mt-1">{suggestion.border ? '✓ Yes' : '○ No'}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Properties Info */}
+                              {getImportantProperties(suggestion.field_properties).length > 0 && (
+                                <div className="mt-4 pt-4 border-t border-blue-300">
+                                  <span className="text-xs text-gray-600">Other Properties:</span>
+                                  <div className="flex flex-wrap gap-1 mt-2">
+                                    {getImportantProperties(suggestion.field_properties).map((prop) => (
+                                      <span
+                                        key={prop}
+                                        className="px-2 py-1 bg-blue-200 text-blue-700 rounded text-xs font-medium"
+                                      >
+                                        {prop === 'auto_trigger' ? '⚡' : prop === 'password' ? '🔐' : prop === 'multiline' ? '📄' : prop === 'rich_text' ? '✏️' : prop === 'comb' ? '#️⃣' : prop === 'no_export' ? '🚫' : '•'} {prop}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
+
+          {/* OCR Limitation Notice */}
+          <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded text-sm">
+            <strong>⚠️ Current Limitation - Confidence & Signer Detection:</strong>
+            <p className="text-gray-700 mt-2">
+              The system currently uses <strong>field names only</strong> for signer detection (e.g., "Signature1" becomes "signature"). It does NOT perform actual OCR on the PDF to read text like "Resident" or "Responsible Party" near fields.
+            </p>
+            <p className="text-gray-600 mt-2 text-xs">
+              <strong>To enable proper signer detection:</strong> We need to implement PDF rendering + Tesseract OCR to extract actual text from the PDF. This would let the system see "Resident" text next to fields and automatically assign the correct signer with high confidence. The OCR Search Radius setting is prepared but not yet active.
+            </p>
+          </div>
         </>
       )}
     </div>
