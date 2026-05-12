@@ -347,4 +347,40 @@ router.get('/:jobId/stream', (req, res, next) => {
   }
 });
 
+// DELETE /api/jobs/:jobId - Delete a job and all its related records
+router.delete('/:jobId', async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+
+    const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Delete all suggestions for this job
+    await db.run('DELETE FROM suggestions WHERE job_id = ?', [jobId]);
+
+    // Delete all versions for this job
+    await db.run('DELETE FROM job_versions WHERE job_id = ?', [jobId]);
+
+    // Delete the job record
+    await db.run('DELETE FROM jobs WHERE id = ?', [jobId]);
+
+    // Delete job directory and files
+    const jobDir = path.join(__dirname, '../jobs', jobId);
+    if (fs.existsSync(jobDir)) {
+      fs.rmSync(jobDir, { recursive: true, force: true });
+    }
+
+    res.json({
+      success: true,
+      message: 'Job deleted successfully',
+      jobId
+    });
+
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

@@ -1,15 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { ArrowLeft, Download } from 'lucide-react';
+import { ArrowLeft, Download, Trash2 } from 'lucide-react';
+import { formatDateTimeCentral } from '../utils/dateFormatter';
 
 function JobDetail() {
   const { jobId } = useParams();
+  const navigate = useNavigate();
   const [job, setJob] = useState(null);
   const [versions, setVersions] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetchJobDetail();
@@ -44,6 +48,17 @@ function JobDetail() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       alert('Failed to download PDF');
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      setDeleting(true);
+      await axios.delete(`/api/jobs/${jobId}`);
+      navigate('/history');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete job');
+      setDeleting(false);
     }
   };
 
@@ -83,22 +98,31 @@ function JobDetail() {
             <h1 className="text-3xl font-bold">{job.document_title}</h1>
             <p className="text-gray-600 text-lg">{job.company_name}</p>
             <p className="text-gray-500 text-sm mt-2">
-              Created: {new Date(job.created_at).toLocaleString()}
+              Created: {formatDateTimeCentral(job.created_at)}
             </p>
             {job.completed_at && (
               <p className="text-gray-500 text-sm">
-                Completed: {new Date(job.completed_at).toLocaleString()}
+                Completed: {formatDateTimeCentral(job.completed_at)}
               </p>
             )}
           </div>
-          <span className={`px-4 py-2 rounded text-white font-medium text-lg ${
-            job.status === 'analyzing' ? 'bg-blue-600' :
-            job.status === 'reviewed' ? 'bg-yellow-600' :
-            job.status === 'applied' ? 'bg-green-600' :
-            'bg-red-600'
-          }`}>
-            {job.status.toUpperCase()}
-          </span>
+          <div className="flex items-center gap-4">
+            <span className={`px-4 py-2 rounded text-white font-medium text-lg ${
+              job.status === 'analyzing' ? 'bg-blue-600' :
+              job.status === 'reviewed' ? 'bg-yellow-600' :
+              job.status === 'applied' ? 'bg-green-600' :
+              'bg-red-600'
+            }`}>
+              {job.status.toUpperCase()}
+            </span>
+            <button
+              onClick={() => setDeleteConfirm(true)}
+              className="text-red-600 hover:text-red-800 p-2 hover:bg-red-50 rounded"
+              title="Delete job"
+            >
+              <Trash2 size={20} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -154,7 +178,7 @@ function JobDetail() {
       )}
 
       {/* Configuration Summary */}
-      <div className="bg-white rounded-lg shadow-lg p-6">
+      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
         <h2 className="text-xl font-bold mb-4">Job Configuration</h2>
         <div className="grid grid-cols-2 gap-4">
           <div>
@@ -169,6 +193,41 @@ function JobDetail() {
           )}
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm">
+            <h2 className="text-xl font-bold text-red-600 mb-4">Delete Job?</h2>
+            <p className="text-gray-700 mb-2">
+              Are you sure you want to delete this job?
+            </p>
+            <p className="text-sm text-gray-600 mb-6">
+              <strong>{job.company_name}</strong> - {job.document_title}
+            </p>
+            <p className="text-sm text-gray-500 mb-6">
+              This action cannot be undone. All associated files and records will be deleted.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteConfirm(false)}
+                disabled={deleting}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                <Trash2 size={16} />
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

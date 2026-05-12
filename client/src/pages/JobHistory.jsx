@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { Trash2 } from 'lucide-react';
+import { formatDateCentral } from '../utils/dateFormatter';
 
 function JobHistory() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetchJobs();
@@ -38,6 +42,20 @@ function JobHistory() {
       'failed': 'bg-red-100 text-red-800'
     };
     return colors[status] || 'bg-gray-100 text-gray-800';
+  };
+
+  const handleDelete = async (jobId) => {
+    try {
+      setDeleting(true);
+      await axios.delete(`/api/jobs/${jobId}`);
+      setJobs(jobs.filter(job => job.id !== jobId));
+      setDeleteConfirm(null);
+      setError(null);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete job');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -103,20 +121,63 @@ function JobHistory() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">
-                    {new Date(job.created_at).toLocaleDateString()}
+                    {formatDateCentral(job.created_at)}
                   </td>
-                  <td className="px-6 py-4 text-sm">
+                  <td className="px-6 py-4 text-sm flex gap-3">
                     <Link
                       to={`/jobs/${job.id}/detail`}
                       className="text-blue-600 hover:underline"
                     >
                       View
                     </Link>
+                    <button
+                      onClick={() => setDeleteConfirm(job)}
+                      className="text-red-600 hover:text-red-800 flex items-center gap-1"
+                      title="Delete job"
+                    >
+                      <Trash2 size={16} />
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm">
+            <h2 className="text-xl font-bold text-red-600 mb-4">Delete Job?</h2>
+            <p className="text-gray-700 mb-2">
+              Are you sure you want to delete this job?
+            </p>
+            <p className="text-sm text-gray-600 mb-6">
+              <strong>{deleteConfirm.company_name}</strong> - {deleteConfirm.document_title}
+            </p>
+            <p className="text-sm text-gray-500 mb-6">
+              This action cannot be undone. All associated files and records will be deleted.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                disabled={deleting}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm.id)}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                <Trash2 size={16} />
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
