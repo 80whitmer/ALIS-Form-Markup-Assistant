@@ -19,6 +19,11 @@ db.initialize();
 app.use('/api/jobs', require('./api/jobs'));
 app.use('/api/downloads', require('./api/downloads'));
 
+// Development endpoints (dev mode only)
+if (process.env.NODE_ENV === 'development') {
+  app.use('/api/dev', require('./api/dev'));
+}
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

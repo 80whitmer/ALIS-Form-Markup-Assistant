@@ -80,7 +80,7 @@ function JobDetail() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <Link to="/history" className="flex items-center gap-2 text-blue-600 hover:underline mb-6">
+      <Link to="/history" className="flex items-center gap-2 hover:underline mb-6 transition" style={{ color: '#FF9800' }}>
         <ArrowLeft size={16} />
         Back to History
       </Link>
@@ -107,18 +107,24 @@ function JobDetail() {
             )}
           </div>
           <div className="flex items-center gap-4">
-            <span className={`px-4 py-2 rounded text-white font-medium text-lg ${
-              job.status === 'analyzing' ? 'bg-blue-600' :
-              job.status === 'reviewed' ? 'bg-yellow-600' :
-              job.status === 'applied' ? 'bg-green-600' :
-              'bg-red-600'
-            }`}>
+            <span className="px-4 py-2 rounded text-white font-medium text-lg" style={{
+              backgroundColor:
+                job.status === 'analyzing' ? '#FFC107' :
+                job.status === 'reviewed' ? '#FF9800' :
+                job.status === 'applied' ? '#FF5722' :
+                '#555'
+            }}>
               {job.status.toUpperCase()}
             </span>
             <button
               onClick={() => setDeleteConfirm(true)}
-              className="text-red-600 hover:text-red-800 p-2 hover:bg-red-50 rounded"
+              className="p-2 rounded transition"
               title="Delete job"
+              style={{
+                color: '#FF5722'
+              }}
+              onMouseEnter={(e) => e.target.style.backgroundColor = '#FFEBEE'}
+              onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
             >
               <Trash2 size={20} />
             </button>
@@ -130,19 +136,19 @@ function JobDetail() {
       {summary && (
         <div className="grid grid-cols-4 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-4 text-center">
-            <p className="text-3xl font-bold text-blue-600">{summary.total || 0}</p>
+            <p className="text-3xl font-bold" style={{ color: '#FFC107' }}>{summary.total || 0}</p>
             <p className="text-gray-600 text-sm">Total Fields</p>
           </div>
           <div className="bg-white rounded-lg shadow p-4 text-center">
-            <p className="text-3xl font-bold text-green-600">{summary.approved || 0}</p>
+            <p className="text-3xl font-bold" style={{ color: '#FF5722' }}>{summary.approved || 0}</p>
             <p className="text-gray-600 text-sm">Approved</p>
           </div>
           <div className="bg-white rounded-lg shadow p-4 text-center">
-            <p className="text-3xl font-bold text-yellow-600">{summary.reviewed || 0}</p>
+            <p className="text-3xl font-bold" style={{ color: '#FF9800' }}>{summary.reviewed || 0}</p>
             <p className="text-gray-600 text-sm">Under Review</p>
           </div>
           <div className="bg-white rounded-lg shadow p-4 text-center">
-            <p className="text-3xl font-bold text-orange-600">{summary.autoApproved || 0}</p>
+            <p className="text-3xl font-bold" style={{ color: '#FF9800' }}>{summary.autoApproved || 0}</p>
             <p className="text-gray-600 text-sm">Auto-Approved</p>
           </div>
         </div>
@@ -166,7 +172,12 @@ function JobDetail() {
                 </div>
                 <button
                   onClick={() => handleDownload(version.version_type)}
-                  className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition"
+                  className="flex items-center gap-2 text-white px-4 py-2 rounded transition"
+                  style={{
+                    backgroundColor: '#FF9800'
+                  }}
+                  onMouseEnter={(e) => e.target.style.backgroundColor = '#E68900'}
+                  onMouseLeave={(e) => e.target.style.backgroundColor = '#FF9800'}
                 >
                   <Download size={16} />
                   Download
@@ -198,7 +209,7 @@ function JobDetail() {
       {deleteConfirm && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm">
-            <h2 className="text-xl font-bold text-red-600 mb-4">Delete Job?</h2>
+            <h2 className="text-xl font-bold mb-4" style={{ color: '#FF5722' }}>Delete Job?</h2>
             <p className="text-gray-700 mb-2">
               Are you sure you want to delete this job?
             </p>
@@ -219,7 +230,12 @@ function JobDetail() {
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
+                className="px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 transition"
+                style={{
+                  backgroundColor: '#FF5722'
+                }}
+                onMouseEnter={(e) => e.target.style.backgroundColor = '#E64A19'}
+                onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
               >
                 <Trash2 size={16} />
                 {deleting ? 'Deleting...' : 'Delete'}

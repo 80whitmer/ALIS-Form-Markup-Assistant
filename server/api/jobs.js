@@ -10,7 +10,7 @@ const router = express.Router();
 // POST /api/jobs - Submit a new PDF for analysis
 router.post('/', async (req, res, next) => {
   try {
-    const { pdf, company_name, document_title, ocr_radius = 100, form_template } = req.body;
+    const { pdf, company_name, document_title, ocr_radius = 100, form_template, signers = [] } = req.body;
 
     if (!pdf || !company_name || !document_title) {
       return res.status(400).json({
@@ -36,11 +36,14 @@ router.post('/', async (req, res, next) => {
     const inputPath = path.join(jobDir, 'input.pdf');
     fs.writeFileSync(inputPath, pdfBuffer);
 
+    // Store signers as JSON string
+    const signersJSON = signers && signers.length > 0 ? JSON.stringify(signers) : null;
+
     // Create job record
     await db.run(
-      `INSERT INTO jobs (id, company_name, document_title, ocr_radius, form_template, status)
-       VALUES (?, ?, ?, ?, ?, 'analyzing')`,
-      [jobId, company_name, document_title, ocr_radius, form_template || null]
+      `INSERT INTO jobs (id, company_name, document_title, ocr_radius, form_template, signers, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'analyzing')`,
+      [jobId, company_name, document_title, ocr_radius, form_template || null, signersJSON]
     );
 
     // Start analysis in background (non-blocking)
@@ -50,7 +53,8 @@ router.post('/', async (req, res, next) => {
         companyName: company_name,
         documentTitle: document_title,
         ocrSearchRadius: ocr_radius,
-        formTemplate: form_template
+        formTemplate: form_template,
+        signers: signers || []
       }).catch(err => {
         console.error(`Job ${jobId} failed:`, err.message);
         db.run(

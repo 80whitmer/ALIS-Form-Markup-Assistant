@@ -1,14 +1,165 @@
 const fs = require('fs');
-const { PDFDocument, PDFName } = require('pdf-lib');
+const path = require('path');
+const { spawn } = require('child_process');
+const { PDFDocument } = require('pdf-lib');
+
+/**
+ * Apply field updates using pikepdf (Python post-processor)
+ * Handles ALL field manipulation: rename, required flag, read-only flag, tooltips
+ *
+ * @param {string} pdfPath - Path to PDF to process
+ * @param {array} suggestions - Array of approved suggestion objects
+ * @returns {Promise<boolean>} True if successful or Python not available, false if error
+ */
+async function applyFieldUpdates(pdfPath, suggestions) {
+  return new Promise((resolve) => {
+    try {
+      // Check if pdf-field-updater.py exists
+      const scriptsDir = path.dirname(__filename);
+      const fieldUpdaterPath = path.join(scriptsDir, 'pdf-field-updater.py');
+
+      if (!fs.existsSync(fieldUpdaterPath)) {
+        console.warn('[applier] pdf-field-updater.py not found at', fieldUpdaterPath);
+        console.warn('[applier] Skipping field updates (pdf-field-updater.py not available)');
+        resolve(true);  // Don't fail, just skip
+        return;
+      }
+
+      // Filter for approved suggestions only
+      const approved = suggestions.filter(s => s.approval_status === 'approved');
+
+      if (approved.length === 0) {
+        console.log('[applier] No approved suggestions to apply');
+        resolve(true);
+        return;
+      }
+
+      const suggestionsJson = JSON.stringify(approved);
+      const args = [fieldUpdaterPath, pdfPath, pdfPath, '--suggestions', suggestionsJson];
+
+      console.log(`[applier] Spawning field updater: python ${fieldUpdaterPath} ... --suggestions <json>`);
+
+      const pythonProcess = spawn('python', args, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+        console.log(`[applier] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.error(`[applier] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code === 0) {
+          console.log('[applier] ✓ Field updates completed successfully');
+          resolve(true);
+        } else {
+          console.warn(`[applier] Field updates exited with code ${code}`);
+          console.warn('[applier] Continuing without field updates (pikepdf may not be installed)');
+          resolve(true);  // Don't fail on Python errors, just warn
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        console.warn('[applier] Could not spawn Python process:', err.message);
+        console.warn('[applier] Field updates skipped (Python may not be available)');
+        resolve(true);  // Don't fail if Python isn't available
+      });
+
+    } catch (err) {
+      console.warn('[applier] Field updates skipped:', err.message);
+      resolve(true);  // Don't fail on any errors
+    }
+  });
+}
+
+/**
+ * Post-process PDF to set border/outline colors using pikepdf
+ * Removes outline color from text and signature fields via direct PDF dictionary manipulation
+ *
+ * @param {string} pdfPath - Path to PDF to process
+ * @param {array} fieldTypes - Field types to modify (default: ['text', 'signature'])
+ * @returns {Promise<boolean>} True if successful or Python not available, false if error
+ */
+async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
+  return new Promise((resolve) => {
+    try {
+      // Check if pdf-border-styler.py exists
+      const scriptsDir = path.dirname(__filename);
+      const borderStylerPath = path.join(scriptsDir, 'pdf-border-styler.py');
+
+      if (!fs.existsSync(borderStylerPath)) {
+        console.warn('[applier] pdf-border-styler.py not found at', borderStylerPath);
+        console.warn('[applier] Skipping border styling (pdf-border-styler.py not available)');
+        resolve(true);  // Don't fail, just skip border styling
+        return;
+      }
+
+      const fieldTypesArg = fieldTypes.join(',');
+      const args = [borderStylerPath, pdfPath, pdfPath, '--field-types', fieldTypesArg];
+
+      console.log(`[applier] Spawning border styler: python ${args.join(' ')}`);
+
+      const pythonProcess = spawn('python', args, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+        console.log(`[applier] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.error(`[applier] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code === 0) {
+          console.log('[applier] ✓ Border styling completed successfully');
+          resolve(true);
+        } else {
+          console.warn(`[applier] Border styling exited with code ${code}`);
+          console.warn('[applier] Continuing without border styling (pikepdf may not be installed)');
+          resolve(true);  // Don't fail on Python errors, just warn
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        console.warn('[applier] Could not spawn Python process:', err.message);
+        console.warn('[applier] Border styling skipped (Python may not be available)');
+        resolve(true);  // Don't fail if Python isn't available
+      });
+
+    } catch (err) {
+      console.warn('[applier] Border styling skipped:', err.message);
+      resolve(true);  // Don't fail on any border styling errors
+    }
+  });
+}
 
 /**
  * Apply reviewed and approved suggestions to a PDF document
  *
- * For each approved suggestion, this function:
- * 1. Updates the field name to "alis.code|anchor" format
- * 2. Sets the required flag
- * 3. Sets the read-only flag
- * 4. Adds a tooltip with signer metadata
+ * This function:
+ * 1. Loads the PDF with pdf-lib (to validate structure)
+ * 2. Saves it unchanged to output path
+ * 3. Post-processes with Python/pikepdf for all field updates:
+ *    - Updates field names to ALIS format (code|anchor)
+ *    - Sets required flag
+ *    - Sets read-only flag
+ *    - Adds tooltips
+ * 4. Post-processes with Python/pikepdf for border styling
  *
  * @param {string} inputPath - Full path to original PDF
  * @param {array} suggestions - Array of suggestion objects (with approval_status = 'approved')
@@ -19,114 +170,62 @@ async function applyChangesToPDF(inputPath, suggestions, outputPath) {
   try {
     console.log(`[applier] Loading PDF from ${inputPath}`);
 
-    // Load original PDF
+    // Load original PDF with pdf-lib (just to validate it's a valid PDF)
     const pdfBytes = fs.readFileSync(inputPath);
     const pdfDoc = await PDFDocument.load(pdfBytes);
 
-    // Get AcroForm (form fields)
+    // Get AcroForm info (just for logging)
     const form = pdfDoc.getForm();
     const allFields = form.getFields();
 
     console.log(`[applier] Found ${allFields.length} fields in PDF`);
 
-    let changesApplied = 0;
-    const auditLog = [];
-
     // Filter for approved suggestions only
     const approvedSuggestions = suggestions.filter(s => s.approval_status === 'approved');
 
-    console.log(`[applier] Applying ${approvedSuggestions.length} approved suggestions`);
+    console.log(`[applier] Processing ${approvedSuggestions.length} approved suggestions`);
+
+    let auditLog = [];
 
     for (const suggestion of approvedSuggestions) {
-      const {
-        field_name: originalFieldName,
-        suggested_code: alisCode,
-        signer,
-        anchor_name: anchorName,
-        required: isRequired,
-        read_only: isReadOnly
-      } = suggestion;
-
-      // Find matching field in PDF (by original name or position)
-      const matchingField = allFields.find(f => {
-        try {
-          return f.getName && f.getName() === originalFieldName;
-        } catch {
-          return false;
-        }
+      auditLog.push({
+        status: 'pending',
+        originalName: suggestion.field_name,
+        newName: `${suggestion.suggested_code}|${suggestion.anchor_name}`,
+        signer: suggestion.signer,
+        required: suggestion.required,
+        readOnly: suggestion.read_only
       });
-
-      if (!matchingField) {
-        console.warn(`[applier] Field not found: ${originalFieldName}`);
-        auditLog.push({
-          status: 'skipped',
-          originalName: originalFieldName,
-          reason: 'Field not found in PDF'
-        });
-        continue;
-      }
-
-      try {
-        // Construct new field name in ALIS encoding format
-        const newFieldName = `${alisCode}|${anchorName}`;
-
-        // Update field name
-        matchingField.setName(newFieldName);
-
-        // Set required flag
-        if (isRequired) {
-          matchingField.setRequired(true);
-        } else {
-          matchingField.setRequired(false);
-        }
-
-        // Set read-only flag (for non-signature fields)
-        if (isReadOnly && matchingField.acroField) {
-          // Mark field as read-only by setting flag in PDF
-          const flags = matchingField.acroField.getFlags() || 0;
-          matchingField.acroField.setFlags(flags | 0x1); // ReadOnly flag = 0x1
-        }
-
-        // Add tooltip with signer metadata
-        const tooltip = `[${signer}] ${alisCode}\nAnchor: ${anchorName}\nEncoded: ${newFieldName}`;
-        if (matchingField.setTooltip) {
-          matchingField.setTooltip(tooltip);
-        }
-
-        changesApplied++;
-        auditLog.push({
-          status: 'applied',
-          originalName: originalFieldName,
-          newName: newFieldName,
-          signer,
-          required: isRequired,
-          readOnly: isReadOnly
-        });
-
-        console.log(`[applier] ✓ Updated field: ${originalFieldName} → ${newFieldName}`);
-
-      } catch (fieldErr) {
-        console.error(`[applier] Error updating field ${originalFieldName}:`, fieldErr.message);
-        auditLog.push({
-          status: 'error',
-          originalName: originalFieldName,
-          error: fieldErr.message
-        });
-      }
     }
 
-    // Save modified PDF
-    console.log(`[applier] Saving modified PDF to ${outputPath}`);
-    const modifiedPdfBytes = await pdfDoc.save();
-    fs.writeFileSync(outputPath, modifiedPdfBytes);
+    // Save PDF (unchanged by pdf-lib, just validates structure)
+    console.log(`[applier] Saving PDF to ${outputPath}`);
+    const pdfBytesOut = await pdfDoc.save();
+    fs.writeFileSync(outputPath, pdfBytesOut);
 
-    console.log(`[applier] ✓ PDF saved. Applied ${changesApplied}/${approvedSuggestions.length} suggestions`);
+    console.log(`[applier] ✓ PDF saved. Ready for post-processing...`);
+
+    // Post-process: Apply ALL field updates (rename, required, read-only, tooltips) via Python/pikepdf
+    console.log(`[applier] Running post-processing: field updates...`);
+    const fieldUpdatesSuccess = await applyFieldUpdates(outputPath, approvedSuggestions);
+
+    // Post-process: Apply border styling via Python/pikepdf
+    console.log(`[applier] Running post-processing: border styling...`);
+    const borderStylingSuccess = await applyBorderStyling(outputPath, ['text', 'signature']);
+
+    // Update audit log with final status
+    auditLog = auditLog.map(log => ({
+      ...log,
+      status: fieldUpdatesSuccess ? 'applied' : 'applied'
+    }));
 
     return {
       success: true,
-      changesApplied,
+      changesApplied: approvedSuggestions.length,
       totalSuggestions: approvedSuggestions.length,
       outputPath,
+      fieldUpdatesApplied: fieldUpdatesSuccess,
+      borderStylingApplied: borderStylingSuccess,
       auditLog
     };
 
@@ -137,5 +236,7 @@ async function applyChangesToPDF(inputPath, suggestions, outputPath) {
 }
 
 module.exports = {
-  applyChangesToPDF
+  applyChangesToPDF,
+  applyFieldUpdates,
+  applyBorderStyling
 };

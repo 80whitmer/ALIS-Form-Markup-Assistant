@@ -10,29 +10,42 @@ const masterListMap = require('./master-list-map');
 /**
  * Generate full property suggestions for all fields
  *
- * @param {array} fieldLabels - Output from label-extractor.js
+ * @param {array} fieldLabels - Output from label-extractor.js (with field metadata)
+ * @param {array} detectedFields - Original fields from field-detector.js (for preserving field names)
  * @param {string} formTemplate - Form template ID
  * @returns {array} Array of suggestion objects
  */
-function generatePropertySuggestions(fieldLabels, formTemplate = null) {
+function generatePropertySuggestions(fieldLabels, detectedFields = [], formTemplate = null) {
   console.log(`\n💡 Generating property suggestions...`);
+
+  // Create a map of field_id to original field for quick lookup
+  const fieldMap = {};
+  for (const field of detectedFields) {
+    fieldMap[field.id] = field;
+  }
 
   const suggestions = [];
 
   for (const label of fieldLabels) {
+    // Get original field data if available
+    const originalField = fieldMap[label.field_id];
+
     // Match label to code
     const codeMatch = matchLabelToCode(label.detected_label, formTemplate);
 
     const suggestion = {
       field_id: label.field_id,
-      detected_label: label.detected_label,
+      field_name: originalField?.name || label.detected_label,  // Preserve original PDF field name
+      field_type: originalField?.type || 'unknown',             // Preserve field type from PDF
+      detected_label: label.detected_label,                      // Cleaned/extracted label
       suggested_code: codeMatch.code,
       confidence: codeMatch.confidence,
       match_type: codeMatch.match_type,
       reason: codeMatch.reason,
       status: determineStatus(codeMatch.confidence),
       properties: null,
-      warning: null
+      warning: null,
+      position: originalField?.position || null               // Preserve position for anchor generation
     };
 
     if (codeMatch.code) {

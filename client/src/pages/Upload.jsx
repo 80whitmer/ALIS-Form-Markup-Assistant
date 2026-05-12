@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload as UploadIcon } from 'lucide-react';
+import { Upload as UploadIcon, Plus, X } from 'lucide-react';
 import axios from 'axios';
 
 function Upload() {
@@ -9,6 +9,11 @@ function Upload() {
   const [companyName, setCompanyName] = useState('');
   const [documentTitle, setDocumentTitle] = useState('');
   const [ocrRadius, setOcrRadius] = useState(100);
+  const [signers, setSigners] = useState([
+    { id: 1, name: 'Resident' },
+    { id: 2, name: 'Staff' }
+  ]);
+  const [newSignerName, setNewSignerName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -40,6 +45,18 @@ function Upload() {
     }
   };
 
+  const addSigner = () => {
+    if (newSignerName.trim()) {
+      const newId = Math.max(...signers.map(s => s.id), 0) + 1;
+      setSigners([...signers, { id: newId, name: newSignerName }]);
+      setNewSignerName('');
+    }
+  };
+
+  const removeSigner = (id) => {
+    setSigners(signers.filter(s => s.id !== id));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -61,7 +78,8 @@ function Upload() {
           pdf: base64PDF,
           company_name: companyName,
           document_title: documentTitle,
-          ocr_radius: ocrRadius
+          ocr_radius: ocrRadius,
+          signers: signers.map(s => s.name)
         });
 
         const { jobId } = response.data;
@@ -93,7 +111,12 @@ function Upload() {
           <div
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            className="mb-6 border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition"
+            className="mb-6 border-2 border-dashed rounded-lg p-8 text-center transition"
+            style={{
+              borderColor: '#FF9800'
+            }}
+            onDragEnter={(e) => e.currentTarget.style.borderColor = '#FF5722'}
+            onDragLeave={(e) => e.currentTarget.style.borderColor = '#FF9800'}
           >
             <input
               type="file"
@@ -125,7 +148,12 @@ function Upload() {
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 placeholder="e.g., Steadman Hill"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                style={{
+                  '--tw-ring-color': '#FF9800'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#FF9800'}
+                onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
                 disabled={loading}
               />
             </div>
@@ -139,7 +167,12 @@ function Upload() {
                 value={documentTitle}
                 onChange={(e) => setDocumentTitle(e.target.value)}
                 placeholder="e.g., Move-In Assessment Form"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                style={{
+                  '--tw-ring-color': '#FF9800'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#FF9800'}
+                onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
                 disabled={loading}
               />
             </div>
@@ -154,7 +187,12 @@ function Upload() {
                 onChange={(e) => setOcrRadius(parseInt(e.target.value))}
                 min="50"
                 max="200"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                style={{
+                  '--tw-ring-color': '#FF9800'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#FF9800'}
+                onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
                 disabled={loading}
               />
               <p className="text-gray-500 text-xs mt-1">
@@ -163,11 +201,82 @@ function Upload() {
             </div>
           </div>
 
+          {/* Signers Configuration */}
+          <div className="mb-6 p-4 rounded-lg" style={{
+            backgroundColor: '#FFF3E0',
+            border: '1px solid #FFE0B2'
+          }}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">
+              Configure Signers/Anchors
+            </h3>
+            <p className="text-xs text-gray-600 mb-4">
+              Define who will sign this document. The system will predict which fields belong to each signer during analysis.
+            </p>
+
+            {/* Signer List */}
+            <div className="space-y-2 mb-4">
+              {signers.map((signer) => (
+                <div
+                  key={signer.id}
+                  className="flex items-center justify-between bg-white p-3 rounded border border-gray-200"
+                >
+                  <span className="text-sm font-medium text-gray-700">{signer.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeSigner(signer.id)}
+                    disabled={signers.length === 1}
+                    className="transition disabled:cursor-not-allowed"
+                    style={{
+                      color: signers.length === 1 ? '#CCC' : '#FF5722'
+                    }}
+                    onMouseEnter={(e) => signers.length > 1 && (e.target.style.opacity = '0.7')}
+                    onMouseLeave={(e) => e.target.style.opacity = '1'}
+                    title="Remove signer"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add Signer */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newSignerName}
+                onChange={(e) => setNewSignerName(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && addSigner()}
+                placeholder="e.g., Manager, Witness, Administrator"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={loading}
+              />
+              <button
+                type="button"
+                onClick={addSigner}
+                disabled={!newSignerName.trim() || loading}
+                className="px-3 py-2 text-white rounded disabled:cursor-not-allowed transition flex items-center gap-1 text-sm"
+                style={{
+                  backgroundColor: !newSignerName.trim() || loading ? '#CCC' : '#FF9800'
+                }}
+                onMouseEnter={(e) => !newSignerName.trim() || loading || (e.target.style.backgroundColor = '#E68900')}
+                onMouseLeave={(e) => e.target.style.backgroundColor = '#FF9800'}
+              >
+                <Plus size={16} />
+                Add
+              </button>
+            </div>
+          </div>
+
           {/* Submit Button */}
           <button
             type="submit"
             disabled={loading || !file}
-            className="w-full bg-blue-600 text-white font-medium py-3 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition"
+            className="w-full text-white font-medium py-3 rounded-lg disabled:cursor-not-allowed transition"
+            style={{
+              backgroundColor: loading || !file ? '#CCC' : '#FF5722'
+            }}
+            onMouseEnter={(e) => !(loading || !file) && (e.target.style.backgroundColor = '#E64A19')}
+            onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
           >
             {loading ? 'Analyzing PDF...' : 'Analyze PDF'}
           </button>
