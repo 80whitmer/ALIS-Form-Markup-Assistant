@@ -1,11 +1,11 @@
 /**
  * label-extractor-ocr-enhanced.js
  *
- * Enhanced OCR-based signer label detection for PDF form fields.
+ * Enhanced OCR-based signer label detection for PDF form fields using Tesseract.
  * Uses directional text search with confidence scoring based on proximity.
  *
  * Features:
- * - Page-by-page text extraction with coordinates
+ * - Page-by-page text extraction with Tesseract OCR
  * - Directional zones (ABOVE, BELOW, LEFT, RIGHT, INSIDE)
  * - Distance-based confidence scoring: confidence = max(0, 1.0 - (distance / radius))
  * - 20% confidence boost for ABOVE zone labels
@@ -18,73 +18,111 @@
  * @returns {Promise<Array>} Array of {field_name, signer, confidence, match_text, match_zone, match_reason}
  */
 
-const pdfjs = require('pdfjs-dist/legacy/build/pdf');
-
-// Set up pdfjs worker
-try {
-  pdfjs.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/legacy/build/pdf.worker.entry');
-} catch (e) {
-  console.warn('[ocr-enhanced] pdfjs worker warning:', e.message);
-}
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
 /**
- * Extract text with coordinates from PDF pages
+ * Extract text with coordinates from PDF pages using Tesseract OCR
  * @param {Buffer} pdfBuffer - PDF file buffer
  * @returns {Promise<Object>} Map of page number to extracted text items with coordinates
  */
 async function extractTextWithCoordinates(pdfBuffer) {
-  try {
-    // Convert Buffer to Uint8Array for pdfjs-dist
-    const uint8Array = new Uint8Array(pdfBuffer);
+  return new Promise((resolve, reject) => {
+    try {
+      // Write PDF to temp file
+      const tmpDir = path.join(path.dirname(__filename), '..', 'tmp');
+      if (!fs.existsSync(tmpDir)) {
+        fs.mkdirSync(tmpDir, { recursive: true });
+      }
 
-    const pdf = await pdfjs.getDocument({ data: uint8Array }).promise;
-    const textByPage = {};
+      const tmpPdfPath = path.join(tmpDir, `ocr-temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.pdf`);
+      fs.writeFileSync(tmpPdfPath, pdfBuffer);
 
-    console.log(`[ocr-enhanced] Extracting text from ${pdf.numPages} pages...`);
+      // Get path to python script
+      const pythonScriptPath = path.join(path.dirname(__filename), 'pdf-ocr-extractor.py');
 
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      try {
-        const page = await pdf.getPage(pageNum);
-        const textContent = await page.getTextContent();
+      if (!fs.existsSync(pythonScriptPath)) {
+        throw new Error(`pdf-ocr-extractor.py not found at ${pythonScriptPath}`);
+      }
 
-        const pageTexts = [];
+      console.log(`[ocr-enhanced] Spawning Tesseract OCR process: ${pythonScriptPath} ${tmpPdfPath}`);
 
-        if (textContent && textContent.items) {
-          textContent.items.forEach(item => {
-            if (item.str && item.str.trim()) {
-              // Convert PDF coordinates to pixel-like values
-              pageTexts.push({
-                text: item.str.trim(),
-                x: item.x,
-                y: item.y,
-                width: item.width || 0,
-                height: item.height || 0,
-                // Normalize to roughly match field coordinates
-                normalized: {
-                  x: Math.round(item.x),
-                  y: Math.round(item.y)
-                }
-              });
+      const pythonProcess = spawn('python', [pythonScriptPath, tmpPdfPath], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.log(`[ocr-enhanced] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on('close', (code) => {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tmpPdfPath);
+        } catch (e) {
+          console.warn('[ocr-enhanced] Could not delete temp PDF:', e.message);
+        }
+
+        if (code !== 0) {
+          return reject(new Error(`OCR extraction failed with code ${code}: ${stderr}`));
+        }
+
+        try {
+          // Parse JSON output
+          const result = JSON.parse(stdout);
+
+          if (result.status !== 'success') {
+            return reject(new Error(`OCR extraction error: ${result.error}`));
+          }
+
+          // Convert to format expected by findSignersNearField
+          const textByPage = {};
+
+          result.pages.forEach(pageData => {
+            const pageNum = pageData.page;
+            textByPage[pageNum] = pageData.text_regions.map(region => ({
+              text: region.text,
+              x: region.x,
+              y: region.y,
+              width: region.width,
+              height: region.height,
+              confidence: region.confidence
+            }));
+
+            if (textByPage[pageNum].length > 0) {
+              console.log(`[ocr-enhanced] Page ${pageNum}: Extracted ${textByPage[pageNum].length} text regions via Tesseract`);
             }
           });
+
+          resolve(textByPage);
+        } catch (parseErr) {
+          reject(new Error(`Failed to parse OCR output: ${parseErr.message}`));
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tmpPdfPath);
+        } catch (e) {
+          console.warn('[ocr-enhanced] Could not delete temp PDF:', e.message);
         }
 
-        textByPage[pageNum] = pageTexts;
-
-        if (pageTexts.length > 0) {
-          console.log(`[ocr-enhanced] Page ${pageNum}: Extracted ${pageTexts.length} text items`);
-        }
-      } catch (pageErr) {
-        console.warn(`[ocr-enhanced] Error extracting text from page ${pageNum}:`, pageErr.message);
-        textByPage[pageNum] = [];
-      }
+        reject(new Error(`Could not spawn OCR process: ${err.message}`));
+      });
+    } catch (err) {
+      reject(err);
     }
-
-    return textByPage;
-  } catch (err) {
-    console.error('[ocr-enhanced] Error extracting text:', err.message);
-    throw err;
-  }
+  });
 }
 
 /**

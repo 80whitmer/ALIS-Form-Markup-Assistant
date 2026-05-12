@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { PDFDocument } = require('pdf-lib');
+const { spawn } = require('child_process');
 const db = require('../db/database');
 
 // Import enhanced OCR module with directional search and confidence scoring
@@ -27,57 +27,68 @@ function generateAnchor(fieldName, fieldType, page, signer = null) {
 }
 
 /**
- * Detect form fields from PDF using pdf-lib
- * Extracts field names and estimates page numbers
+ * Detect form fields from PDF using pikepdf via Python field detector
+ * Extracts field names, types, positions, and correct page numbers
  */
 async function detectFieldsFromPDF(pdfPath) {
-  try {
-    const pdfBytes = fs.readFileSync(pdfPath);
-    const pdfDoc = await PDFDocument.load(pdfBytes);
-    const form = pdfDoc.getForm();
-    const fieldsMap = form.getFields();
-    const pageCount = pdfDoc.getPages().length;
+  return new Promise((resolve, reject) => {
+    try {
+      const fieldDetectorPath = path.join(__dirname, 'pdf-field-detector.py');
 
-    console.log(`[form-markup] PDF has ${pageCount} pages`);
+      if (!fs.existsSync(fieldDetectorPath)) {
+        throw new Error(`pdf-field-detector.py not found at ${fieldDetectorPath}`);
+      }
 
-    const allFields = [];
-    let fieldIndex = 0;
-    const fieldCount = Object.keys(fieldsMap).length;
+      console.log(`[form-markup] Spawning field detector: ${fieldDetectorPath}`);
 
-    for (const [fieldName, field] of Object.entries(fieldsMap)) {
-      const fieldType = field.constructor.name.toLowerCase();
-
-      // Estimate page number based on field index (distribute across pages)
-      const pageNum = Math.max(1, Math.min(
-        Math.ceil((fieldIndex + 1) / Math.ceil(fieldCount / pageCount)),
-        pageCount
-      ));
-
-      allFields.push({
-        field_name: fieldName,
-        field_page: pageNum,
-        field_index: fieldIndex,
-        field_type: fieldType.includes('sig') ? 'signature' :
-                    fieldType.includes('text') ? 'text' :
-                    fieldType.includes('check') ? 'checkbox' : 'unknown',
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        position: { page: pageNum }
+      const pythonProcess = spawn('python', [fieldDetectorPath, pdfPath], {
+        stdio: ['pipe', 'pipe', 'pipe']
       });
 
-      fieldIndex++;
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.log(`[form-markup] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+          return reject(new Error(`Field detection failed with code ${code}: ${stderr}`));
+        }
+
+        try {
+          const result = JSON.parse(stdout);
+
+          if (result.status !== 'success') {
+            return reject(new Error(`Field detection error: ${result.error}`));
+          }
+
+          console.log(`[form-markup] Detected ${result.fields.length} fields across ${result.total_pages} pages`);
+
+          if (result.fields.length === 0) {
+            console.warn('[form-markup] No fields found in PDF');
+          }
+
+          resolve(result.fields);
+        } catch (parseErr) {
+          reject(new Error(`Failed to parse field detection output: ${parseErr.message}`));
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        reject(new Error(`Could not spawn field detector process: ${err.message}`));
+      });
+
+    } catch (err) {
+      reject(err);
     }
-
-    console.log(`[form-markup] Detected ${allFields.length} fields across ${pageCount} pages`);
-
-    return allFields;
-
-  } catch (err) {
-    console.error('[form-markup] Error detecting fields:', err.message);
-    throw err;
-  }
+  });
 }
 
 /**
@@ -111,13 +122,11 @@ async function runFormMarkupJob(jobId, options) {
 
     if (extractSignerLabels) {
       try {
-        const pdfBytes = fs.readFileSync(pdfPath);
-        // Convert Buffer to Uint8Array for OCR module
-        const uint8Array = new Uint8Array(pdfBytes);
+        const pdfBuffer = fs.readFileSync(pdfPath);
         const availableSigners = signers.length > 0 ? signers : ['resident', 'staff', 'admin', 'family'];
 
         const labelResults = await extractSignerLabels(
-          uint8Array,
+          pdfBuffer,
           fields,
           availableSigners,
           ocrSearchRadius

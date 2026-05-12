@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const pdfjs = require('pdfjs-dist/legacy/build/pdf');
+const { spawn } = require('child_process');
 
 // Import enhanced OCR module with directional search
 let extractSignerLabels;
@@ -23,85 +23,69 @@ try {
   extractSignerLabels = null;
 }
 
-// Set up pdfjs worker
-try {
-  pdfjs.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/legacy/build/pdf.worker.entry');
-} catch (e) {
-  console.warn('[form-markup] pdfjs worker setup warning:', e.message);
-}
-
 /**
  * Detect form fields from a PDF with page numbers
- * Uses pdfjs for page-by-page iteration to capture correct page numbers
+ * Uses pikepdf via Python field detector for reliable field extraction
  */
 async function detectFields(pdfPath) {
-  try {
-    const pdfBytes = fs.readFileSync(pdfPath);
+  return new Promise((resolve, reject) => {
+    try {
+      const fieldDetectorPath = path.join(__dirname, 'services', 'pdf-field-detector.py');
 
-    // Convert Buffer to Uint8Array for pdfjs-dist
-    const uint8Array = new Uint8Array(pdfBytes);
+      if (!fs.existsSync(fieldDetectorPath)) {
+        throw new Error(`pdf-field-detector.py not found at ${fieldDetectorPath}`);
+      }
 
-    const pdf = await pdfjs.getDocument({ data: uint8Array }).promise;
-    const allFields = [];
-    let fieldIndex = 0;
+      console.log(`[form-markup] Spawning field detector: ${fieldDetectorPath} ${pdfPath}`);
 
-    console.log(`[form-markup] PDF has ${pdf.numPages} pages`);
+      const pythonProcess = spawn('python', [fieldDetectorPath, pdfPath], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
 
-    // Page-by-page iteration to capture correct page numbers
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      try {
-        const page = await pdf.getPage(pageNum);
-        const annotations = await page.getAnnotations();
+      let stdout = '';
+      let stderr = '';
 
-        const formFields = annotations.filter(ann =>
-          ann.subtype === 'Widget' && ann.fieldName
-        );
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
 
-        if (formFields.length > 0) {
-          console.log(`[form-markup] Page ${pageNum}: Found ${formFields.length} fields`);
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.log(`[form-markup] ${data.toString().trim()}`);
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+          return reject(new Error(`Field detection failed with code ${code}: ${stderr}`));
         }
 
-        formFields.forEach((fieldAnn) => {
-          const fieldName = fieldAnn.fieldName || `field_${fieldIndex}`;
-          const fieldType = fieldAnn.fieldType ?
-            (fieldAnn.fieldType.toLowerCase().includes('sig') ? 'signature' :
-             fieldAnn.fieldType.toLowerCase().includes('tx') ? 'text' :
-             fieldAnn.fieldType.toLowerCase().includes('ch') ? 'checkbox' :
-             fieldAnn.fieldType.toLowerCase().includes('btn') ? 'button' : 'unknown') :
-            'unknown';
+        try {
+          const result = JSON.parse(stdout);
 
-          allFields.push({
-            field_name: fieldName,
-            field_page: pageNum,          // ← CORRECT PAGE NUMBER
-            field_index: fieldIndex,
-            field_type: fieldType,
-            x: fieldAnn.rect?.[0] || 0,
-            y: fieldAnn.rect?.[1] || 0,
-            width: (fieldAnn.rect?.[2] || 0) - (fieldAnn.rect?.[0] || 0),
-            height: (fieldAnn.rect?.[3] || 0) - (fieldAnn.rect?.[1] || 0),
-            position: { page: pageNum, x: fieldAnn.rect?.[0], y: fieldAnn.rect?.[1] }
-          });
+          if (result.status !== 'success') {
+            return reject(new Error(`Field detection error: ${result.error}`));
+          }
 
-          fieldIndex++;
-        });
+          console.log(`[form-markup] Detected ${result.fields.length} fields across ${result.total_pages} pages`);
 
-      } catch (pageErr) {
-        console.warn(`[form-markup] Warning processing page ${pageNum}:`, pageErr.message);
-      }
+          if (result.fields.length === 0) {
+            console.warn('[form-markup] No fields found in PDF');
+          }
+
+          resolve(result.fields);
+        } catch (parseErr) {
+          reject(new Error(`Failed to parse field detection output: ${parseErr.message}`));
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        reject(new Error(`Could not spawn field detector process: ${err.message}`));
+      });
+
+    } catch (err) {
+      reject(err);
     }
-
-    console.log(`[form-markup] Detected ${allFields.length} fields across ${pdf.numPages} pages`);
-
-    if (allFields.length === 0) {
-      console.warn('[form-markup] No fields found in PDF');
-    }
-
-    return allFields;
-
-  } catch (err) {
-    console.error('[form-markup] Error detecting fields:', err.message);
-    throw err;
-  }
+  });
 }
 
 /**
@@ -162,15 +146,12 @@ async function processFormMarkupJob(jobData) {
 
     if (extractSignerLabels) {
       try {
-        const pdfBytes = fs.readFileSync(input_pdf_path);
-
-        // Convert Buffer to Uint8Array for OCR module
-        const uint8Array = new Uint8Array(pdfBytes);
+        const pdfBuffer = fs.readFileSync(input_pdf_path);
 
         const availableSigners = signers && signers.length > 0 ? signers : ['resident', 'staff', 'admin', 'family'];
 
         const labelResults = await extractSignerLabels(
-          uint8Array,
+          pdfBuffer,
           detectedFields,
           availableSigners,
           ocr_radius
