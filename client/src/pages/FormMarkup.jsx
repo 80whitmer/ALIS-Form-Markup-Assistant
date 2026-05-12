@@ -350,6 +350,30 @@ function FormMarkup() {
           </span>
         </div>
 
+        <div className="grid grid-cols-4 gap-4 mt-6 mb-6">
+          <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+            <p className="text-gray-600 text-sm font-medium">Total Fields</p>
+            <p className="text-3xl font-bold text-blue-600">{suggestions.length}</p>
+          </div>
+          <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
+            <p className="text-gray-600 text-sm font-medium">Signatures</p>
+            <p className="text-3xl font-bold text-orange-600">{suggestions.filter(s => s.field_type === 'signature').length}</p>
+          </div>
+          <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+            <p className="text-gray-600 text-sm font-medium">Signers Found</p>
+            <p className="text-3xl font-bold text-green-600">{new Set(suggestions.map(s => s.signer).filter(s => s && s !== 'unassigned')).size}</p>
+          </div>
+          <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+            <p className="text-gray-600 text-sm font-medium">Signers</p>
+            <p className="text-sm font-semibold text-purple-600 leading-relaxed">
+              {new Set(suggestions.map(s => s.signer).filter(Boolean)).size > 0
+                ? Array.from(new Set(suggestions.map(s => s.signer).filter(Boolean))).join(', ')
+                : 'None assigned'
+              }
+            </p>
+          </div>
+        </div>
+
         {job.status === 'analyzed' || job.status === 'reviewed' ? (
           <button
             onClick={handleApprove}
@@ -720,7 +744,6 @@ function FormMarkup() {
                 </thead>
                 <tbody>
                   {pageSuggestions.map((suggestion, pageIndex) => {
-                    const fullIndex = suggestions.indexOf(suggestion);
                     return (
                       <tr key={suggestion.id} className="border-b hover:bg-blue-50">
                         <td className="px-4 py-3 text-sm font-semibold" style={{ color: getFieldTypeColor(suggestion.field_type) }}>

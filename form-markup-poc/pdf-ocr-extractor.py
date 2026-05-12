@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
 PDF OCR Text Extractor
-Extracts text from PDF pages using Tesseract OCR with bounding box coordinates.
+Extracts text from PDF pages using EasyOCR (neural network-based) with bounding box coordinates.
 
 Usage:
   python pdf-ocr-extractor.py <input.pdf>
 
 Output: JSON with text regions and coordinates
   {
+    "status": "success",
+    "total_pages": 1,
     "pages": [
       {
         "page": 1,
         "text_regions": [
-          {"text": "Resident", "x": 100, "y": 150, "width": 80, "height": 20}
+          {"text": "Resident", "x": 100, "y": 150, "width": 80, "height": 20, "confidence": 95}
         ]
       }
     ]
@@ -25,46 +27,18 @@ import argparse
 from pathlib import Path
 
 try:
-    import pytesseract
-    from pytesseract import Output
-    # Set explicit path to Tesseract binary for Windows
-    # Try multiple common installation locations
-    import os
-    tesseract_paths = [
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        os.path.expandvars(r'%USERPROFILE%\AppData\Local\Tesseract-OCR\tesseract.exe'),
-        r'C:\tesseract\tesseract.exe',
-    ]
-
-    tesseract_found = False
-    for path in tesseract_paths:
-        if os.path.exists(path):
-            pytesseract.pytesseract.pytesseract_cmd = path
-            # Also set TESSDATA_PREFIX for pytesseract to find language files
-            tessdata_path = os.path.join(os.path.dirname(path), 'tessdata')
-            if os.path.exists(tessdata_path):
-                os.environ['TESSDATA_PREFIX'] = tessdata_path
-                print(f"[ocr-extractor] Set TESSDATA_PREFIX to: {tessdata_path}", file=sys.stderr)
-            tesseract_found = True
-            print(f"[ocr-extractor] Found Tesseract at: {path}", file=sys.stderr)
-            break
-
-    if not tesseract_found:
-        print(f"[ocr-extractor] WARNING: Tesseract not found at any expected path. Tried: {', '.join(tesseract_paths)}", file=sys.stderr)
-        print(f"[ocr-extractor] Attempting to use system PATH...", file=sys.stderr)
+    import easyocr
+    print("[ocr-extractor] Using EasyOCR for text extraction", file=sys.stderr)
 except ImportError:
-    print("[ocr-extractor] pytesseract not found, attempting to install...", file=sys.stderr)
+    print("[ocr-extractor] easyocr not found, attempting to install...", file=sys.stderr)
     import subprocess
     try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pytesseract', '--quiet'])
-        import pytesseract
-        from pytesseract import Output
-        print("[ocr-extractor] pytesseract installed successfully", file=sys.stderr)
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'easyocr', '--break-system-packages', '--quiet'])
+        import easyocr
+        print("[ocr-extractor] easyocr installed successfully", file=sys.stderr)
     except Exception as e:
-        print(f"[ocr-extractor] ERROR: Could not install pytesseract: {e}", file=sys.stderr)
-        print(f"[ocr-extractor] Please install manually: pip install pytesseract", file=sys.stderr)
-        print(f"[ocr-extractor] Also install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki", file=sys.stderr)
+        print(f"[ocr-extractor] ERROR: Could not install easyocr: {e}", file=sys.stderr)
+        print(f"[ocr-extractor] Please install manually: pip install easyocr", file=sys.stderr)
         sys.exit(1)
 
 try:
@@ -103,33 +77,42 @@ def extract_text_with_coordinates(pdf_path):
         images = convert_from_path(pdf_path, dpi=150, poppler_path=poppler_path)
         print(f"[ocr-extractor] Converted {len(images)} pages to images", file=sys.stderr)
 
+        # Initialize EasyOCR reader (loads model on first use)
+        print(f"[ocr-extractor] Initializing EasyOCR reader...", file=sys.stderr)
+        reader = easyocr.Reader(['en'], gpu=False)
+
         pages = []
 
         for page_num, image in enumerate(images, start=1):
             print(f"[ocr-extractor] Extracting text from page {page_num}/{len(images)}...", file=sys.stderr)
 
             try:
-                # Extract text with detailed data (includes coordinates)
-                data = pytesseract.image_to_data(image, output_type=Output.DICT)
+                # Run EasyOCR on the image
+                results = reader.readtext(image, detail=1)  # detail=1 gives us bounding boxes
 
                 text_regions = []
 
-                # Extract bounding boxes and text
-                for i in range(len(data['text'])):
-                    text = data['text'][i].strip()
-                    conf = int(data['conf'][i])
-
-                    # Skip empty text or very low confidence
-                    if not text or conf < 30:
+                # Extract bounding boxes and text from EasyOCR results
+                # Each result is (bbox, text, confidence) where bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                for (bbox, text, confidence) in results:
+                    if not text or confidence < 0.3:
                         continue
 
+                    # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] - convert to x,y,width,height
+                    x_coords = [point[0] for point in bbox]
+                    y_coords = [point[1] for point in bbox]
+                    x = min(x_coords)
+                    y = min(y_coords)
+                    width = max(x_coords) - x
+                    height = max(y_coords) - y
+
                     region = {
-                        'text': text,
-                        'x': int(data['left'][i]),
-                        'y': int(data['top'][i]),
-                        'width': int(data['width'][i]),
-                        'height': int(data['height'][i]),
-                        'confidence': conf
+                        'text': text.strip(),
+                        'x': int(x),
+                        'y': int(y),
+                        'width': int(width),
+                        'height': int(height),
+                        'confidence': int(confidence * 100)  # Convert to 0-100 scale
                     }
                     text_regions.append(region)
 
@@ -141,7 +124,11 @@ def extract_text_with_coordinates(pdf_path):
                 })
 
             except Exception as e:
-                print(f"[ocr-extractor] Warning: Error extracting page {page_num}: {e}", file=sys.stderr)
+                import traceback
+                error_msg = str(e)
+                tb = traceback.format_exc()
+                print(f"[ocr-extractor] Warning: Error extracting page {page_num}: {error_msg}", file=sys.stderr)
+                print(f"[ocr-extractor] Traceback: {tb}", file=sys.stderr)
                 pages.append({
                     'page': page_num,
                     'text_regions': []
@@ -164,7 +151,7 @@ def extract_text_with_coordinates(pdf_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract text from PDF with coordinates using Tesseract OCR')
+    parser = argparse.ArgumentParser(description='Extract text from PDF with coordinates using EasyOCR')
     parser.add_argument('pdf_path', help='Path to input PDF file')
 
     args = parser.parse_args()
