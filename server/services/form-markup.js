@@ -2,6 +2,149 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const db = require('../db/database');
+const { mergeAlisSuggestions } = require('./alis-suggestion-matcher');
+
+/**
+ * Generate a preview image for a field region
+ * Spawns pdf-preview-extractor.py to extract and render the field area
+ * @param {string} pdfPath - Path to PDF file
+ * @param {number} pageNum - Page number (0-indexed)
+ * @param {number} x - X coordinate of field
+ * @param {number} y - Y coordinate of field
+ * @param {number} width - Width of field region
+ * @param {number} height - Height of field region
+ * @param {number} padding - Padding around field (default 40)
+ * @param {string} fieldName - Optional field name for debug output
+ */
+function generateFieldPreview(pdfPath, pageNum, x, y, width, height, padding = 40, fieldName = null) {
+  return new Promise((resolve) => {
+    try {
+      if (!fs.existsSync(pdfPath)) {
+        console.log('[form-markup] PDF file not found, skipping preview');
+        resolve(null);
+        return;
+      }
+
+      // Calculate crop region with padding
+      const cropX = Math.max(0, x - padding);
+      const cropY = Math.max(0, y - padding);
+      const cropWidth = width + (padding * 2);
+      const cropHeight = height + (padding * 2);
+
+      const pythonScript = path.join(__dirname, 'pdf-preview-extractor.py');
+
+      if (!fs.existsSync(pythonScript)) {
+        console.log('[form-markup] PDF preview extractor script not found at:', pythonScript);
+        resolve(null);
+        return;
+      }
+
+      console.log('[form-markup] Spawning preview for page', pageNum, 'crop region:', cropX, cropY, cropWidth, cropHeight);
+      console.log('[form-markup] Python script:', pythonScript);
+      console.log('[form-markup] PDF path:', pdfPath);
+
+      const pythonProcess = spawn('python', [
+        pythonScript,
+        pdfPath,
+        pageNum.toString(),
+        cropX.toString(),
+        cropY.toString(),
+        cropWidth.toString(),
+        cropHeight.toString()
+      ], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+
+      // Set timeout to prevent hanging
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        pythonProcess.kill();
+        console.log('[form-markup] Preview generation timeout');
+        resolve(null);
+      }, 30000); // 30 second timeout
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.log('[form-markup] Python stderr:', data.toString().trim());
+      });
+
+      pythonProcess.on('close', (code) => {
+        clearTimeout(timeoutHandle);
+
+        if (timedOut) return;
+
+        if (code !== 0) {
+          console.log('[form-markup] Preview generation failed with code', code);
+          console.log('[form-markup] stderr:', stderr.slice(0, 500));
+          resolve(null);
+          return;
+        }
+
+        if (!stdout || stdout.length === 0) {
+          console.log('[form-markup] Preview generation produced no output');
+          resolve(null);
+          return;
+        }
+
+        try {
+          const base64Data = stdout.trim();
+
+          // Validate base64 data
+          if (!/^[A-Za-z0-9+/=]+$/.test(base64Data)) {
+            console.log('[form-markup] Invalid base64 data received');
+            resolve(null);
+            return;
+          }
+
+          const dataUrl = `data:image/png;base64,${base64Data}`;
+          console.log('[form-markup] Generated preview image, size:', base64Data.length, 'bytes');
+
+          // DEBUG: Write PNG to disk for visual inspection
+          try {
+            const debugDir = path.join(__dirname, '..', 'debug-previews');
+            if (!fs.existsSync(debugDir)) {
+              fs.mkdirSync(debugDir, { recursive: true });
+            }
+            const safeFieldName = fieldName ? fieldName.replace(/[^a-z0-9._-]/gi, '_').slice(0, 50) : `page${pageNum}`;
+            const timestamp = Date.now();
+            const filename = `${safeFieldName}_${timestamp}.png`;
+            const filepath = path.join(debugDir, filename);
+            const pngBuffer = Buffer.from(base64Data, 'base64');
+            fs.writeFileSync(filepath, pngBuffer);
+            console.log('[form-markup] [DEBUG] Saved preview to:', filepath);
+          } catch (diskErr) {
+            console.log('[form-markup] [DEBUG] Could not save preview file:', diskErr.message);
+          }
+
+          resolve(dataUrl);
+        } catch (err) {
+          console.log('[form-markup] Failed to parse preview data:', err.message);
+          resolve(null);
+        }
+      });
+
+      pythonProcess.on('error', (err) => {
+        clearTimeout(timeoutHandle);
+        console.log('[form-markup] Failed to spawn preview generator:', err.message);
+        console.log('[form-markup] Python script path:', pythonScript);
+        resolve(null);
+      });
+
+    } catch (err) {
+      console.log('[form-markup] Error generating preview:', err.message);
+      resolve(null);
+    }
+  });
+}
 
 // Import enhanced OCR module with directional search and confidence scoring
 let extractSignerLabels;
@@ -17,8 +160,17 @@ try {
  * Anchors help locate fields again if the document is modified
  * Format: {identifier}.{fieldType}.{pageNumber}
  */
+function normalizeSigner(signer) {
+  /**
+   * Normalize signer names to lowercase
+   * Examples: 'Resident' -> 'resident', 'RESPONSIBLE PARTY' -> 'responsible party'
+   */
+  if (!signer) return 'resident';
+  return signer.toLowerCase().trim();
+}
+
 function generateAnchor(fieldName, fieldType, page, signer = null) {
-  let identifier = signer && signer !== 'unassigned' ? signer : fieldName;
+  let identifier = signer && signer !== 'resident' ? signer : fieldName;
   const safeName = identifier
     .replace(/[^a-zA-Z0-9]/g, '_')
     .toLowerCase()
@@ -101,6 +253,7 @@ async function runFormMarkupJob(jobId, options) {
     documentTitle,
     ocrSearchRadius = 100,
     formTemplate,
+    alisAggressiveness = 'off',
     signers = []
   } = options;
 
@@ -156,19 +309,21 @@ async function runFormMarkupJob(jobId, options) {
     // Phase 2: Generate basic suggestions
     console.log(`[${jobId}] Phase 2: Generating suggestions...`);
     const suggestions = fields.map((field, idx) => {
-      const alisCode = `FAC.${field.field_type}.${idx + 1}`;
-      const anchorName = generateAnchor(field.field_name, field.field_type, field.field_page);
+      // Normalize field type: button -> check (buttons are checkboxes)
+      const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
+      const alisCode = `resident.${normalizedType}.${idx + 1}`;
+      const anchorName = generateAnchor(field.field_name, normalizedType, field.field_page);
 
       return {
         field_name: field.field_name,
-        field_type: field.field_type,
+        field_type: normalizedType,  // Store normalized type
         field_page: field.field_page,        // ← PAGE NUMBER INCLUDED
         field_index: field.field_index,
         suggested_code: alisCode,
-        signer: 'unassigned',
+        signer: 'resident',
         confidence: 0.0,
         approval_status: 'review_needed',
-        required: field.field_type === 'signature',
+        required: normalizedType === 'signature',
         read_only: false
       };
     });
@@ -178,10 +333,12 @@ async function runFormMarkupJob(jobId, options) {
     const mergedSuggestions = suggestions.map((suggestion, idx) => {
       const ocrData = ocrResults[suggestion.field_name];
       if (ocrData) {
-        const signer = ocrData.signer || suggestion.signer;
+        const signer = normalizeSigner(ocrData.signer || suggestion.signer);
         const confidence = ocrData.confidence || suggestion.confidence;
-        // Regenerate suggested_code with actual signer from OCR
-        const suggestionCode = `${signer}.${suggestion.field_type}.${idx + 1}`;
+        // Normalize field type: button -> check (buttons are checkboxes)
+        const normalizedType = suggestion.field_type === 'button' ? 'check' : suggestion.field_type;
+        // Regenerate suggested_code with actual signer from OCR (normalized to lowercase)
+        const suggestionCode = `${signer}.${normalizedType}.${idx + 1}`;
         return {
           ...suggestion,
           signer,
@@ -192,22 +349,90 @@ async function runFormMarkupJob(jobId, options) {
           match_reason: ocrData.match_reason
         };
       }
-      return suggestion;
+      // Return with normalized signer even if no OCR match
+      return {
+        ...suggestion,
+        signer: normalizeSigner(suggestion.signer)
+      };
     });
 
     console.log(`[${jobId}] Merged OCR results: ${mergedSuggestions.filter(s => s.confidence > 0).length} fields with confidence > 0%`);
 
-    // Phase 3: Store suggestions in database
-    console.log(`[${jobId}] Phase 3: Storing suggestions in database...`);
-    for (const suggestion of mergedSuggestions) {
+    // Phase 2c: Merge ALIS suggestions if aggressiveness level is set
+    let suggestionsWithAlis = mergedSuggestions;
+    if (alisAggressiveness !== 'off') {
+      console.log(`[${jobId}] Phase 2c: Adding ALIS suggestions (aggressiveness: ${alisAggressiveness})...`);
+      suggestionsWithAlis = mergeAlisSuggestions(mergedSuggestions, alisAggressiveness);
+      const alisCount = suggestionsWithAlis.filter(s => s.alis_suggestion).length;
+      console.log(`[${jobId}] ALIS: Generated ${alisCount} ALIS field suggestions`);
+    }
+
+    // Phase 3b: Generate preview images (with concurrency limit)
+    console.log(`[${jobId}] Phase 3b: Generating field preview images for ${suggestionsWithAlis.length} fields...`);
+    const suggestionsWithPreviews = [];
+    const previewBatchSize = 3;
+
+    for (let i = 0; i < suggestionsWithAlis.length; i += previewBatchSize) {
+      const batch = suggestionsWithAlis.slice(i, i + previewBatchSize);
+      console.log(`[${jobId}] Processing preview batch ${Math.floor(i / previewBatchSize) + 1}/${Math.ceil(suggestionsWithAlis.length / previewBatchSize)}`);
+
+      const previewPromises = batch.map(async (suggestion, batchIdx) => {
+        try {
+          // Find the corresponding field for position data
+          const field = fields.find(f => f.field_name === suggestion.field_name);
+          if (!field || field.x === undefined) {
+            console.log(`[${jobId}] Field ${suggestion.field_name}: No position data available`);
+            return { ...suggestion, preview_image: null };
+          }
+
+          console.log(`[${jobId}] Generating preview for field "${suggestion.field_name}" on page ${field.field_page || 1}`);
+
+          const preview = await generateFieldPreview(
+            pdfPath,
+            field.field_page || 1,
+            field.x,
+            field.y,
+            field.width,
+            field.height,
+            40, // padding
+            suggestion.field_name // pass field name for debug output
+          );
+
+          if (preview) {
+            console.log(`[${jobId}] ✓ Preview generated for "${suggestion.field_name}"`);
+          } else {
+            console.log(`[${jobId}] ✗ Preview failed for "${suggestion.field_name}"`);
+          }
+
+          return { ...suggestion, preview_image: preview };
+        } catch (err) {
+          console.warn(`[${jobId}] Exception generating preview for ${suggestion.field_name}:`, err.message);
+          return { ...suggestion, preview_image: null };
+        }
+      });
+
+      const results = await Promise.all(previewPromises);
+      suggestionsWithPreviews.push(...results);
+    }
+
+    const previewCount = suggestionsWithPreviews.filter(s => s.preview_image).length;
+    const failedCount = suggestionsWithPreviews.filter(s => !s.preview_image).length;
+    console.log(`[${jobId}] Phase 3b complete: ${previewCount} images generated, ${failedCount} failed`);
+    if (previewCount === 0 && suggestionsWithAlis.length > 0) {
+      console.warn(`[${jobId}] WARNING: No preview images were generated. Check logs for pdf-preview-extractor.py errors`);
+    }
+
+    // Phase 3c: Store suggestions in database
+    console.log(`[${jobId}] Phase 3c: Storing suggestions in database...`);
+    for (const suggestion of suggestionsWithPreviews) {
       const anchorName = generateAnchor(suggestion.field_name, suggestion.field_type, suggestion.field_page, suggestion.signer);
 
       try {
         await db.run(
           `INSERT INTO suggestions (
             job_id, field_page, field_name, field_type, suggested_code,
-            signer, anchor_name, required, read_only, confidence, approval_status, match_text, match_zone
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            signer, anchor_name, required, read_only, confidence, approval_status, match_text, match_zone, preview_image
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             jobId,
             suggestion.field_page,         // ← CORRECT PAGE NUMBER
@@ -221,18 +446,19 @@ async function runFormMarkupJob(jobId, options) {
             suggestion.confidence,
             suggestion.approval_status,
             suggestion.match_text || null,
-            suggestion.match_zone || null
+            suggestion.match_zone || null,
+            suggestion.preview_image || null
           ]
         );
       } catch (insertErr) {
         // Handle different database schemas gracefully
         if (insertErr.message.includes('no such column')) {
-          // Try without match_text and match_zone for older schema
+          // Try without preview_image for older schema
           await db.run(
             `INSERT INTO suggestions (
               job_id, field_page, field_name, field_type, suggested_code,
-              signer, anchor_name, required, read_only, confidence, approval_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              signer, anchor_name, required, read_only, confidence, approval_status, match_text, match_zone
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               jobId,
               suggestion.field_page,
@@ -244,7 +470,9 @@ async function runFormMarkupJob(jobId, options) {
               suggestion.required ? 1 : 0,
               suggestion.read_only ? 1 : 0,
               suggestion.confidence,
-              suggestion.approval_status
+              suggestion.approval_status,
+              suggestion.match_text || null,
+              suggestion.match_zone || null
             ]
           );
         } else {
@@ -255,21 +483,21 @@ async function runFormMarkupJob(jobId, options) {
 
     // Phase 4: Update job status
     console.log(`[${jobId}] Phase 4: Updating job status...`);
-    const pageCount = Math.max(...mergedSuggestions.map(s => s.field_page || 1));
+    const pageCount = Math.max(...suggestionsWithPreviews.map(s => s.field_page || 1));
 
     await db.run(
       `UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?`,
       ['reviewed', new Date().toISOString(), jobId]
     );
 
-    console.log(`[${jobId}] ✓ Job completed: ${mergedSuggestions.length} fields across ${pageCount} pages`);
+    console.log(`[${jobId}] ✓ Job completed: ${suggestionsWithPreviews.length} fields across ${pageCount} pages`);
 
     return {
       jobId,
       status: 'reviewed',
-      totalFields: mergedSuggestions.length,
+      totalFields: suggestionsWithPreviews.length,
       totalPages: pageCount,
-      suggestionsGenerated: mergedSuggestions.length
+      suggestionsGenerated: suggestionsWithPreviews.length
     };
 
   } catch (err) {

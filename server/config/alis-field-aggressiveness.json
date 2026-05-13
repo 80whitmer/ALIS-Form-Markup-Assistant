@@ -1,0 +1,100 @@
+{
+  "description": "ALIS field suggestion aggressiveness levels for form markup",
+  "levels": {
+    "off": {
+      "name": "Off",
+      "description": "No ALIS suggestions",
+      "fields": []
+    },
+    "low": {
+      "name": "Low (Static)",
+      "description": "Only very static, commonly found fields",
+      "fields": [
+        "alis.resident.first_name",
+        "alis.resident.middle_name",
+        "alis.resident.last_name",
+        "alis.resident.full_name",
+        "alis.resident.dob",
+        "alis.resident.gender",
+        "alis.resident.ssn"
+      ],
+      "keywords": {
+        "first_name": ["first", "firstname", "fname", "given"],
+        "middle_name": ["middle", "middlename", "mname"],
+        "last_name": ["last", "lastname", "lname", "surname", "family"],
+        "full_name": ["full name", "name", "resident name"],
+        "dob": ["date of birth", "birth date", "dob", "birthday", "born"],
+        "gender": ["gender", "sex", "male", "female"],
+        "ssn": ["ssn", "social security", "ss#"]
+      }
+    },
+    "medium": {
+      "name": "Medium",
+      "description": "Common fields plus demographic information",
+      "fields": [
+        "alis.resident.first_name",
+        "alis.resident.middle_name",
+        "alis.resident.last_name",
+        "alis.resident.full_name",
+        "alis.resident.dob",
+        "alis.resident.gender",
+        "alis.resident.ssn",
+        "alis.resident.race",
+        "alis.resident.marital_status",
+        "alis.resident.nickname",
+        "alis.resident.age"
+      ],
+      "keywords": {
+        "first_name": ["first", "firstname", "fname", "given"],
+        "middle_name": ["middle", "middlename", "mname"],
+        "last_name": ["last", "lastname", "lname", "surname", "family"],
+        "full_name": ["full name", "name", "resident name"],
+        "dob": ["date of birth", "birth date", "dob", "birthday", "born"],
+        "gender": ["gender", "sex", "male", "female"],
+        "ssn": ["ssn", "social security", "ss#"],
+        "race": ["race", "ethnicity", "ethnic"],
+        "marital_status": ["marital", "married", "single", "widowed", "divorced"],
+        "nickname": ["nickname", "nick", "alias"]
+      }
+    },
+    "high": {
+      "name": "High (Aggressive)",
+      "description": "Comprehensive ALIS field matching with OCR text analysis",
+      "keywordMatching": true,
+      "confidenceThreshold": 0.3,
+      "keywords": {
+        "first_name": ["first", "firstname", "fname", "given", "forename"],
+        "middle_name": ["middle", "middlename", "mname", "middle initial"],
+        "last_name": ["last", "lastname", "lname", "surname", "family"],
+        "full_name": ["full name", "name", "resident name", "patient name"],
+        "dob": ["date of birth", "birth date", "dob", "birthday", "born", "b.d.", "b-date"],
+        "gender": ["gender", "sex", "male", "female", "m/f"],
+        "ssn": ["ssn", "social security", "ss#", "social sec", "tax id"],
+        "age": ["age", "years old", "yrs old", "aged"],
+        "race": ["race", "ethnicity", "ethnic", "racial"],
+        "marital_status": ["marital", "married", "single", "widowed", "divorced", "spouse status"],
+        "nickname": ["nickname", "nick", "alias", "also known"],
+        "height": ["height", "ht.", "tall"],
+        "weight": ["weight", "wt.", "lb", "lbs", "pounds"],
+        "hair_color": ["hair", "hair color", "color of hair"],
+        "eye_color": ["eyes", "eye color", "color of eyes"],
+        "phone": ["phone", "telephone", "contact", "mobile", "cell"],
+        "email": ["email", "e-mail", "email address"],
+        "address": ["address", "street", "residence", "lives at"],
+        "city": ["city", "town"],
+        "state": ["state", "province"],
+        "zip": ["zip", "postal", "zip code"],
+        "religious_affiliation": ["religion", "religious", "faith", "denomination"],
+        "physician": ["doctor", "physician", "md", "primary care"],
+        "hospital": ["hospital", "medical center", "facility"],
+        "insurance": ["insurance", "coverage", "policy", "member id"],
+        "diagnosis": ["diagnosis", "condition", "medical history", "disease"],
+        "medication": ["medication", "medicine", "drug", "prescription"],
+        "allergy": ["allergy", "allergies", "allergic"],
+        "emergency_contact": ["emergency", "contact", "next of kin"],
+        "power_of_attorney": ["power of attorney", "attorney", "legal"],
+        "guardian": ["guardian", "conservator", "caregiver"]
+      }
+    }
+  }
+}

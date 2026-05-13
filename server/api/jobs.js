@@ -297,6 +297,46 @@ router.post('/:jobId/apply', async (req, res, next) => {
   }
 });
 
+// GET /api/jobs/:jobId/progress - Get current job progress for loading bar
+router.get('/:jobId/progress', async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+
+    const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Calculate progress based on status
+    let percentage = 0;
+    switch (job.status) {
+      case 'analyzing':
+        percentage = 50; // Half-way through when analyzing
+        break;
+      case 'completed':
+      case 'applied':
+        percentage = 100; // Done
+        break;
+      case 'failed':
+        percentage = 100;
+        break;
+      default:
+        percentage = 25;
+    }
+
+    res.json({
+      jobId,
+      status: job.status,
+      percentage: Math.min(Math.max(percentage, 0), 100),
+      label: job.document_title || 'Processing PDF',
+      updated_at: job.updated_at || job.created_at
+    });
+
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/jobs/:jobId/stream - Server-Sent Events for real-time progress
 router.get('/:jobId/stream', (req, res, next) => {
   try {

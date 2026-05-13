@@ -24,6 +24,8 @@ export default function FormMarkupApproval() {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [progress, setProgress] = useState(0); // Loading bar progress (0-100)
+  const [selectedPreviewId, setSelectedPreviewId] = useState(null); // Which field's preview to show
 
   // Filter and bulk action state
   const [typeFilter, setTypeFilter] = useState('');
@@ -32,9 +34,51 @@ export default function FormMarkupApproval() {
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [bulkSignerValue, setBulkSignerValue] = useState('');
   const [expandedRows, setExpandedRows] = useState(new Set());
+  const [selectAllCheckbox, setSelectAllCheckbox] = useState(null);
 
   const ITEMS_PER_PAGE = 25;
   const COLUMNS = 5;
+
+  // Handle select-all checkbox indeterminate state
+  useEffect(() => {
+    if (selectAllCheckbox) {
+      const filteredSuggestions = getFilteredSuggestions();
+      const pageStart = (currentPage - 1) * ITEMS_PER_PAGE;
+      const pageEnd = pageStart + ITEMS_PER_PAGE;
+      const pageSuggestions = filteredSuggestions.slice(pageStart, pageEnd);
+      const pageOnThisPage = pageSuggestions.filter(s => selectedRows.has(s.id)).length;
+
+      if (pageOnThisPage > 0 && pageOnThisPage < pageSuggestions.length) {
+        selectAllCheckbox.indeterminate = true;
+      } else {
+        selectAllCheckbox.indeterminate = false;
+      }
+    }
+  }, [selectedRows, currentPage, suggestions, typeFilter, signerFilter, selectAllCheckbox]);
+
+  // Poll job progress while loading
+  useEffect(() => {
+    if (!loading || !jobId) return;
+
+    const pollProgress = async () => {
+      try {
+        const progressRes = await fetch(`/api/jobs/${jobId}/progress`);
+        if (progressRes.ok) {
+          const progressData = await progressRes.json();
+          setProgress(progressData.percentage || 0);
+        }
+      } catch (err) {
+        // Silently fail on progress polling
+        console.debug('[progress] Poll error:', err.message);
+      }
+    };
+
+    // Poll every 500ms
+    const interval = setInterval(pollProgress, 500);
+    pollProgress(); // Poll immediately
+
+    return () => clearInterval(interval);
+  }, [loading, jobId]);
 
   // Fetch job and suggestions
   useEffect(() => {
@@ -42,12 +86,14 @@ export default function FormMarkupApproval() {
       try {
         setLoading(true);
         setError('');
+        setProgress(0);
 
         // Get job details
         const jobRes = await fetch(`/api/jobs/${jobId}`);
         if (!jobRes.ok) throw new Error('Failed to load job');
         const jobData = await jobRes.json();
         setJob(jobData);
+        setProgress(50); // Halfway through
 
         // Get suggestions
         const suggestionsRes = await fetch(`/api/jobs/${jobId}/suggestions`);
@@ -63,6 +109,7 @@ export default function FormMarkupApproval() {
 
         setSuggestions(initSuggestions);
         setOriginalSuggestions(initSuggestions);
+        setProgress(100); // Complete
       } catch (err) {
         setError(err.message);
       } finally {
@@ -241,9 +288,29 @@ export default function FormMarkupApproval() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="inline-block animate-spin mb-4">⟳</div>
-          <p className="text-neutral-600">Loading suggestions...</p>
+        <div className="w-full max-w-md text-center space-y-6">
+          <div>
+            <h2 className="text-lg font-bold text-primary-900 mb-2">Analyzing PDF...</h2>
+            <p className="text-sm text-neutral-600">This may take a moment.</p>
+          </div>
+
+          {/* Loading Bar */}
+          <div className="space-y-2">
+            <div className="w-full bg-neutral-200 rounded-full h-3 overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-primary-500 to-primary-600 h-full transition-all duration-300"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <div className="text-sm font-semibold text-primary-900">{progress}%</div>
+          </div>
+
+          {/* Status Message */}
+          <div className="text-sm text-neutral-600">
+            {progress < 30 && 'Extracting form fields...'}
+            {progress >= 30 && progress < 70 && 'Generating suggestions...'}
+            {progress >= 70 && 'Finalizing analysis...'}
+          </div>
         </div>
       </div>
     );
@@ -401,6 +468,71 @@ export default function FormMarkupApproval() {
         </div>
       </div>
 
+      {/* Preview Panel */}
+      {selectedPreviewId && (
+        <div className="card bg-blue-50 border border-blue-300">
+          <div className="flex items-center justify-between mb-4 px-6 pt-6">
+            <h2 className="text-lg font-bold text-primary-900">Field Preview</h2>
+            <button
+              onClick={() => setSelectedPreviewId(null)}
+              className="text-neutral-500 hover:text-neutral-700 text-2xl leading-none"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="px-6 pb-6">
+            {(() => {
+              const preview = suggestions.find(s => s.id === selectedPreviewId);
+              if (!preview) return null;
+
+              return (
+                <div className="space-y-4">
+                  {/* Context Info */}
+                  <div className="grid grid-cols-4 gap-4 bg-white rounded-lg p-4 border border-blue-200 text-sm">
+                    <div>
+                      <label className="font-semibold text-neutral-700 block mb-1">Field Name</label>
+                      <code className="text-xs bg-neutral-100 px-2 py-1 rounded block font-mono truncate" title={preview.field_name}>
+                        {preview.field_name || '—'}
+                      </code>
+                    </div>
+                    <div>
+                      <label className="font-semibold text-neutral-700 block mb-1">Signer</label>
+                      <span className="text-neutral-900">{preview.signer || '—'}</span>
+                    </div>
+                    <div>
+                      <label className="font-semibold text-neutral-700 block mb-1">Type</label>
+                      <span className="text-neutral-900">{preview.field_type || 'text'}</span>
+                    </div>
+                    <div>
+                      <label className="font-semibold text-neutral-700 block mb-1">Confidence</label>
+                      <span className="text-neutral-900 font-semibold text-primary-600">
+                        {Math.round((preview.confidence || 0) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Large Preview Image */}
+                  {preview.preview_image ? (
+                    <div className="bg-white border border-neutral-300 rounded-lg p-4 flex justify-center">
+                      <img
+                        src={preview.preview_image}
+                        alt="Field preview"
+                        className="max-h-96 rounded border border-neutral-200"
+                      />
+                    </div>
+                  ) : (
+                    <div className="bg-white border border-neutral-300 rounded-lg p-12 text-center text-neutral-500">
+                      <p className="text-sm">Preview image not available</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* Bulk Actions */}
       {selectedRows.size > 0 && (
         <div className="card bg-blue-50 border border-blue-200 p-4 space-y-3">
@@ -447,9 +579,11 @@ export default function FormMarkupApproval() {
               <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[40px]">
                 <input
                   type="checkbox"
-                  checked={pageOnThisPage > 0 && pageOnThisPage === paginatedSuggestions.length}
+                  checked={paginatedSuggestions.length > 0 && pageOnThisPage === paginatedSuggestions.length}
+                  ref={checkbox => setSelectAllCheckbox(checkbox)}
                   onChange={toggleSelectAll}
                   className="w-4 h-4 rounded border-neutral-300 text-primary-600 cursor-pointer"
+                  title={paginatedSuggestions.length === 0 ? 'No items on this page' : pageOnThisPage === paginatedSuggestions.length ? 'All selected' : pageOnThisPage > 0 ? 'Some selected' : 'None selected'}
                 />
               </th>
               <th className="text-left py-3 px-4 font-semibold text-primary-900">Current Field Name</th>
@@ -459,6 +593,7 @@ export default function FormMarkupApproval() {
               <th className="text-center py-3 px-4 font-semibold text-primary-900 w-[70px]">Required</th>
               <th className="text-center py-3 px-4 font-semibold text-primary-900 w-[70px]">Read-Only</th>
               <th className="text-center py-3 px-4 font-semibold text-primary-900 w-[90px]">Confidence</th>
+              <th className="text-center py-3 px-4 font-semibold text-primary-900 w-[70px]">Preview</th>
               <th className="text-center py-3 px-4 font-semibold text-primary-900 w-[80px]">Status</th>
             </tr>
           </thead>
@@ -560,6 +695,30 @@ export default function FormMarkupApproval() {
                     <div className="text-sm font-semibold text-primary-900">
                       {Math.round((suggestion.confidence || 0) * 100)}%
                     </div>
+                  </td>
+
+                  {/* Preview Thumbnail */}
+                  <td className="py-3 px-4 text-center">
+                    {suggestion.preview_image ? (
+                      <button
+                        onClick={() => setSelectedPreviewId(suggestion.id)}
+                        className="group relative"
+                      >
+                        <img
+                          src={suggestion.preview_image}
+                          alt="Preview"
+                          className="w-14 h-14 object-cover rounded border-2 border-neutral-300 cursor-pointer hover:border-primary-500 transition-all hover:shadow-md"
+                          title="Click to view full preview"
+                        />
+                        <div className="absolute inset-0 rounded flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all">
+                          <span className="text-white text-lg opacity-0 group-hover:opacity-100 transition-opacity">👁</span>
+                        </div>
+                      </button>
+                    ) : (
+                      <div className="w-14 h-14 bg-neutral-100 rounded border border-neutral-300 flex items-center justify-center text-xs text-neutral-400">
+                        —
+                      </div>
+                    )}
                   </td>
 
                   {/* Approve/Reject Button */}

@@ -101,7 +101,7 @@ function generateSuggestions(detectedFields) {
   console.log(`[form-markup] Generating suggestions for ${detectedFields.length} fields`);
 
   return detectedFields.map((field, idx) => {
-    const alisCode = `FAC.${field.field_type}.${idx + 1}`;
+    const alisCode = `resident.${field.field_type}.${idx + 1}`;
 
     return {
       field_name: field.field_name,
@@ -109,7 +109,7 @@ function generateSuggestions(detectedFields) {
       field_page: field.field_page,        // ← PAGE NUMBER
       field_index: field.field_index,
       suggested_code: alisCode,
-      signer: 'unassigned',
+      signer: 'resident',
       confidence: 0.0,
       approval_status: 'pending',
       required: field.field_type === 'signature',

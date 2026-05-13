@@ -45,6 +45,45 @@ except ImportError:
         sys.exit(1)
 
 
+def build_full_field_name(field_ref):
+    """
+    Build the full hierarchical field name by walking up the /Parent chain.
+    Example: "alis.resident.full_name" instead of just "full_name"
+
+    Args:
+        field_ref: Field reference object
+
+    Returns:
+        str: Full qualified field name
+    """
+    try:
+        names = []
+        current = field_ref
+
+        # Walk up the parent chain
+        while current is not None:
+            if '/T' in current:
+                names.insert(0, str(current['/T']))
+
+            # Get parent if exists
+            if '/Parent' in current:
+                parent = current['/Parent']
+                current = parent.get_object() if hasattr(parent, 'get_object') else parent
+            else:
+                current = None
+
+        # Join names with dots, lowercase, remove quotes
+        full_name = '.'.join(names)
+        full_name = full_name.replace('"', '').replace("'", '')
+        return full_name if full_name else 'unnamed'
+    except Exception as e:
+        # Fallback to leaf name if hierarchy walking fails
+        try:
+            return str(field_ref['/T']).replace('"', '').replace("'", '')
+        except:
+            return 'unnamed'
+
+
 def process_field_recursive(field_ref, field_index, fields, page_map):
     """
     Recursively process fields, including nested fields in groups.
@@ -56,11 +95,11 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
         page_map: Map of object IDs to page numbers
     """
     try:
-        # Get field name
+        # Get field name (full hierarchical path)
         if '/T' not in field_ref:
             return field_index
 
-        field_name = str(field_ref['/T'])
+        field_name = build_full_field_name(field_ref)
 
         # Determine field type
         field_type = 'unknown'

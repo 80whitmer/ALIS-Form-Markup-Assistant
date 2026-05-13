@@ -41,9 +41,197 @@ except ImportError:
         sys.exit(1)
 
 
+def build_full_field_name(field_ref):
+    """
+    Build the full hierarchical field name by walking up the /Parent chain.
+    Example: "alis.resident.full_name" instead of just "full_name"
+    """
+    try:
+        names = []
+        current = field_ref
+
+        # Walk up the parent chain
+        while current is not None:
+            if '/T' in current:
+                names.insert(0, str(current['/T']).replace('"', '').replace("'", ''))
+
+            # Get parent if exists
+            if '/Parent' in current:
+                parent = current['/Parent']
+                current = parent.get_object() if hasattr(parent, 'get_object') else parent
+            else:
+                current = None
+
+        # Join names with dots
+        full_name = '.'.join(names)
+        full_name = full_name.replace('"', '').replace("'", '')
+        return full_name if full_name else 'unnamed'
+    except Exception as e:
+        # Fallback to leaf name if hierarchy walking fails
+        try:
+            return str(field_ref['/T']).replace('"', '').replace("'", '')
+        except:
+            return 'unnamed'
+
+
+def normalize_suggested_code(suggested_code):
+    """
+    Normalize suggested_code to follow ALIS naming convention.
+    Rule: Translate 'button' type to 'check' (buttons are checkboxes)
+    Format: {signer}.{type}.{instance}
+    Valid types: signature, date, initial, check, text
+    """
+    # Convert button to check
+    normalized = suggested_code.replace('.button.', '.check.')
+    return normalized
+
+
+def update_hierarchy_holistically(field_ref, suggested_code):
+    """
+    Completely replace the entire field hierarchy with suggested_code segments.
+    Walks the full parent chain, identifies all named levels, and overwrites them completely.
+
+    Example: If hierarchy is [AcroForm, alis, resident, full_name] and suggested_code is 'resident.text.4'
+    Result: alis='resident', resident='text', full_name='4' -> 'resident.text.4'
+    """
+    segments = suggested_code.split('.')
+
+    # Collect the ENTIRE hierarchy from leaf back to root
+    hierarchy = []
+    current = field_ref
+    while current is not None:
+        hierarchy.insert(0, current)
+        if '/Parent' in current:
+            parent = current['/Parent']
+            current = parent.get_object() if hasattr(parent, 'get_object') else parent
+        else:
+            current = None
+
+    # Find all named levels (levels that have /T field)
+    named_levels = []
+    named_indices = []
+    for idx, level in enumerate(hierarchy):
+        if '/T' in level:
+            named_levels.append(level)
+            named_indices.append(idx)
+
+    # DEBUG: Log before update
+    old_names = []
+    for level in named_levels:
+        try:
+            name = str(level['/T']).replace('"', '').replace("'", '')
+            old_names.append(name)
+        except:
+            old_names.append('(error)')
+
+    print(f"[field-updater] [DEBUG] Completely replacing hierarchy for '{suggested_code}':")
+    print(f"[field-updater] [DEBUG]   Old structure: {' -> '.join(old_names)}")
+    print(f"[field-updater] [DEBUG]   New segments:  {' -> '.join(segments)}")
+    print(f"[field-updater] [DEBUG]   Named levels: {len(named_levels)}, Segments: {len(segments)}")
+
+    # COMPLETELY REPLACE each named level with corresponding segment
+    # If we have more named levels than segments, that's a problem
+    # If we have fewer, the last segment stays on the leaf
+    for i, level in enumerate(named_levels):
+        if i < len(segments):
+            level['/T'] = segments[i]
+        # else: if we have more named levels than segments, leave them unchanged
+        # This should not happen in normal flow
+
+    # DEBUG: Log after update
+    new_names = []
+    for level in named_levels:
+        try:
+            name = str(level['/T']).replace('"', '').replace("'", '')
+            new_names.append(name)
+        except:
+            new_names.append('(error)')
+    result = '.'.join(new_names)
+    print(f"[field-updater] [DEBUG]   Result: {result}")
+
+
+def process_field_recursive(field_ref, suggestions):
+    """
+    Recursively process fields, including nested fields in groups.
+    Returns the number of fields updated.
+    """
+    updated_count = 0
+
+    try:
+        # If this is a field group with children, process them recursively
+        if '/Kids' in field_ref:
+            kids = field_ref['/Kids']
+            for kid in kids:
+                kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
+                updated_count += process_field_recursive(kid_obj, suggestions)
+            return updated_count
+
+        # If this is a leaf field, check if it has a name
+        if '/T' not in field_ref:
+            return 0
+
+        # Build full hierarchical field name
+        field_name = build_full_field_name(field_ref)
+
+        # Check if this field matches any suggestion
+        for suggestion in suggestions:
+            if suggestion.get('approval_status') != 'approved':
+                continue
+
+            if field_name == suggestion.get('field_name'):
+                old_name = suggestion['field_name']
+                new_code = suggestion['suggested_code']
+                # Normalize the suggested code (e.g., button -> check)
+                new_code = normalize_suggested_code(new_code)
+                signer = suggestion['signer']
+                required = suggestion.get('required', True)
+                read_only = suggestion.get('read_only', False)
+
+                # 1. Update entire hierarchy holistically with suggested_code segments
+                update_hierarchy_holistically(field_ref, new_code)
+                print(f"[field-updater] [OK] Renamed: {old_name} -> {new_code}")
+
+                # 2. Set required flag (Ff field flags)
+                # Bit 0 (0x1) = ReadOnly
+                # Bit 1 (0x2) = Required
+                # Bit 2 (0x4) = NoExport
+                flags = field_ref['/Ff'] if '/Ff' in field_ref else 0
+                if isinstance(flags, pikepdf.Object):
+                    flags = int(flags)
+                else:
+                    flags = int(flags) if flags else 0
+
+                if required:
+                    flags |= 0x2  # Set Required bit
+                else:
+                    flags &= ~0x2  # Clear Required bit
+
+                if read_only:
+                    flags |= 0x1  # Set ReadOnly bit
+                else:
+                    flags &= ~0x1  # Clear ReadOnly bit
+
+                field_ref['/Ff'] = flags
+                print(f"[field-updater] [OK] Set flags (required={required}, read_only={read_only})")
+
+                # 3. Add tooltip (TU field - Tooltip)
+                tooltip = f"[{signer}] {new_code}"
+                field_ref['/TU'] = tooltip
+                print(f"[field-updater] [OK] Added tooltip")
+
+                return 1  # One field updated
+
+        return 0  # No match found
+
+    except Exception as e:
+        print(f"[field-updater] Warning: Error processing field: {e}")
+        return 0
+
+
 def update_fields(pdf_path, suggestions, output_path):
     """
     Update form fields in a PDF with all properties and new names.
+    Handles hierarchical (nested) field structures by recursively processing field groups.
 
     Args:
         pdf_path: Path to input PDF
@@ -73,72 +261,34 @@ def update_fields(pdf_path, suggestions, output_path):
 
             fields = acroform['/Fields']
 
-            # Iterate through fields and update matching ones
-            for field_ref in fields:
+            print(f"[field-updater] Found {len(fields)} top-level field groups in PDF AcroForm", file=sys.stderr, flush=True)
+
+            # Debug: Print all field names in PDF (including nested ones)
+            pdf_field_names = []
+            def collect_field_names(field_ref):
                 try:
-                    # CRITICAL FIX: Modify through the reference directly, NOT a detached copy
-                    # Using field_ref.get_object() returns a detached copy - modifications are lost!
-                    # Instead, modify field_ref directly to persist changes to the PDF
+                    if '/Kids' in field_ref:
+                        # This is a field group, recurse into children
+                        kids = field_ref['/Kids']
+                        for kid in kids:
+                            kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
+                            collect_field_names(kid_obj)
+                    elif '/T' in field_ref:
+                        # This is a leaf field
+                        name = build_full_field_name(field_ref)
+                        pdf_field_names.append(name)
+                except:
+                    pass
 
-                    # Check if field has /T (field name)
-                    if '/T' not in field_ref:
-                        continue
+            for field_ref in fields:
+                collect_field_names(field_ref)
 
-                    current_name = str(field_ref['/T'])
+            print(f"[field-updater] All PDF field names (including nested): {pdf_field_names}", file=sys.stderr, flush=True)
+            print(f"[field-updater] Suggestion field names to match: {sorted([s.get('field_name') for s in suggestions])}", file=sys.stderr, flush=True)
 
-                    # Check if this field matches any suggestion
-                    for suggestion in suggestions:
-                        if suggestion.get('approval_status') != 'approved':
-                            continue
-
-                        if current_name == suggestion.get('field_name'):
-                            old_name = suggestion['field_name']
-                            new_code = suggestion['suggested_code']
-                            anchor = suggestion['anchor_name']
-                            signer = suggestion['signer']
-                            required = suggestion.get('required', True)
-                            read_only = suggestion.get('read_only', False)
-
-                            # 1. Rename field (update /T entry) - modify through reference directly
-                            new_field_name = f"{new_code}|{anchor}"
-                            field_ref['/T'] = new_field_name
-                            print(f"[field-updater] [OK] Renamed: {old_name} -> {new_field_name}")
-
-                            # 2. Set required flag (Ff field flags)
-                            # Bit 0 (0x1) = ReadOnly
-                            # Bit 1 (0x2) = Required
-                            # Bit 2 (0x4) = NoExport
-                            flags = field_ref['/Ff'] if '/Ff' in field_ref else 0
-                            if isinstance(flags, pikepdf.Object):
-                                flags = int(flags)
-                            else:
-                                flags = int(flags) if flags else 0
-
-                            if required:
-                                flags |= 0x2  # Set Required bit
-                            else:
-                                flags &= ~0x2  # Clear Required bit
-
-                            if read_only:
-                                flags |= 0x1  # Set ReadOnly bit
-                            else:
-                                flags &= ~0x1  # Clear ReadOnly bit
-
-                            field_ref['/Ff'] = flags
-                            print(f"[field-updater] [OK] Set flags (required={required}, read_only={read_only})")
-
-                            # 3. Add tooltip (TU field - Tooltip)
-                            tooltip = f"[{signer}] {new_code}\nAnchor: {anchor}"
-                            field_ref['/TU'] = tooltip
-                            print(f"[field-updater] [OK] Added tooltip")
-
-                            updated_count += 1
-                            break
-
-                except Exception as e:
-                    # Log error but continue with other fields
-                    print(f"[field-updater] Warning: Error processing field: {e}")
-                    continue
+            # Recursively process all fields (handles nested fields in groups)
+            for field_ref in fields:
+                updated_count += process_field_recursive(field_ref, suggestions)
 
             # Save the modified PDF
             pdf.save(output_path)

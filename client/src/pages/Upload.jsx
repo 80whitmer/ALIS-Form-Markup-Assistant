@@ -14,6 +14,7 @@ function Upload() {
     { id: 2, name: 'Staff' }
   ]);
   const [newSignerName, setNewSignerName] = useState('');
+  const [alisAggressiveness, setAlisAggressiveness] = useState('low');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -79,6 +80,7 @@ function Upload() {
           company_name: companyName,
           document_title: documentTitle,
           ocr_radius: ocrRadius,
+          alis_aggressiveness: alisAggressiveness,
           signers: signers.map(s => s.name)
         });
 
@@ -197,6 +199,39 @@ function Upload() {
               />
               <p className="text-gray-500 text-xs mt-1">
                 How far to search for text near each field (default: 100px)
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                ALIS Field Suggestions
+              </label>
+              <div className="flex gap-2">
+                {['off', 'low', 'high'].map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => setAlisAggressiveness(level)}
+                    disabled={loading}
+                    className="flex-1 px-4 py-2 rounded-lg font-medium transition disabled:cursor-not-allowed"
+                    style={{
+                      backgroundColor: alisAggressiveness === level ? '#FF9800' : '#E8E8E8',
+                      color: alisAggressiveness === level ? 'white' : '#666',
+                      opacity: loading ? 0.6 : 1
+                    }}
+                    onMouseEnter={(e) => !loading && alisAggressiveness !== level && (e.target.style.backgroundColor = '#F0F0F0')}
+                    onMouseLeave={(e) => !loading && (e.target.style.backgroundColor = alisAggressiveness === level ? '#FF9800' : '#E8E8E8')}
+                  >
+                    {level === 'off' && 'Off'}
+                    {level === 'low' && 'Static Fields'}
+                    {level === 'high' && 'Aggressive Match'}
+                  </button>
+                ))}
+              </div>
+              <p className="text-gray-500 text-xs mt-2">
+                {alisAggressiveness === 'off' && 'Standard field suggestions only.'}
+                {alisAggressiveness === 'low' && 'Suggest common ALIS fields (name, DOB, etc.).'}
+                {alisAggressiveness === 'high' && 'Aggressively match OCR text with ALIS field descriptors.'}
               </p>
             </div>
           </div>

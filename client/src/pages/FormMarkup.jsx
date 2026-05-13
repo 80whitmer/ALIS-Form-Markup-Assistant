@@ -30,6 +30,32 @@ function FormMarkup() {
   const [showBulkSignerPanel, setShowBulkSignerPanel] = useState(false);
   const PAGINATION_COLUMNS = 10;
 
+  // Progress bar and preview state
+  const [progress, setProgress] = useState(0);
+  const [selectedPreviewId, setSelectedPreviewId] = useState(null);
+
+  // Poll progress while loading
+  useEffect(() => {
+    if (!loading || !jobId) return;
+
+    const pollProgress = async () => {
+      try {
+        const progressRes = await fetch(`/api/jobs/${jobId}/progress`);
+        if (progressRes.ok) {
+          const progressData = await progressRes.json();
+          setProgress(progressData.percentage || 0);
+        }
+      } catch (err) {
+        console.debug('[progress] Poll error:', err.message);
+      }
+    };
+
+    const interval = setInterval(pollProgress, 500);
+    pollProgress();
+
+    return () => clearInterval(interval);
+  }, [loading, jobId]);
+
   useEffect(() => {
     fetchJobDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -393,8 +419,27 @@ function FormMarkup() {
       </div>
 
       {job.status === 'analyzing' ? (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
-          <p className="text-blue-800">Analyzing PDF... This may take a moment.</p>
+        <div className="flex items-center justify-center py-12">
+          <div className="w-full max-w-md text-center space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-blue-900 mb-2">Analyzing PDF...</h2>
+              <p className="text-sm text-gray-600">This may take a moment.</p>
+            </div>
+            <div className="space-y-2">
+              <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-blue-500 to-blue-600 h-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <div className="text-sm font-semibold text-blue-900">{progress}%</div>
+            </div>
+            <div className="text-sm text-gray-600">
+              {progress < 30 && 'Extracting form fields...'}
+              {progress >= 30 && progress < 70 && 'Generating suggestions...'}
+              {progress >= 70 && 'Finalizing analysis...'}
+            </div>
+          </div>
         </div>
       ) : suggestions.length === 0 ? (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
@@ -402,6 +447,67 @@ function FormMarkup() {
         </div>
       ) : (
         <>
+          {/* Preview Panel */}
+          {selectedPreviewId && (
+            <div className="bg-blue-50 border border-blue-300 rounded-lg p-6 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-blue-900">Field Preview</h2>
+                <button
+                  onClick={() => setSelectedPreviewId(null)}
+                  className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {(() => {
+                const preview = suggestions.find(s => s.id === selectedPreviewId);
+                if (!preview) return null;
+
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-4 gap-4 bg-white rounded-lg p-4 border border-blue-200 text-sm">
+                      <div>
+                        <label className="font-semibold text-gray-700 block mb-1">Field Name</label>
+                        <code className="text-xs bg-gray-100 px-2 py-1 rounded block font-mono truncate" title={preview.field_name}>
+                          {preview.field_name || '—'}
+                        </code>
+                      </div>
+                      <div>
+                        <label className="font-semibold text-gray-700 block mb-1">Signer</label>
+                        <span className="text-gray-900">{preview.signer || '—'}</span>
+                      </div>
+                      <div>
+                        <label className="font-semibold text-gray-700 block mb-1">Type</label>
+                        <span className="text-gray-900">{preview.field_type || 'text'}</span>
+                      </div>
+                      <div>
+                        <label className="font-semibold text-gray-700 block mb-1">Confidence</label>
+                        <span className="text-gray-900 font-semibold text-blue-600">
+                          {Math.round((preview.confidence || 0) * 100)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {preview.preview_image ? (
+                      <div className="bg-white border border-gray-300 rounded-lg p-4 flex justify-center">
+                        <img
+                          src={preview.preview_image}
+                          alt="Field preview"
+                          className="max-h-96 rounded border border-gray-200"
+                        />
+                      </div>
+                    ) : (
+                      <div className="bg-white border border-gray-300 rounded-lg p-12 text-center text-gray-500">
+                        <p className="text-sm">Preview image not available</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {/* Filters */}
           <div className="bg-white rounded-lg shadow p-4 mb-6">
             <div className="grid grid-cols-4 gap-4">
@@ -792,6 +898,7 @@ function FormMarkup() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Required</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Read-Only</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600">Confidence</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600">Preview</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -880,6 +987,30 @@ function FormMarkup() {
                               </span>
                             </div>
                           </td>
+
+                          {/* Preview Thumbnail */}
+                          <td className="px-4 py-3 text-center">
+                            {suggestion.preview_image ? (
+                              <button
+                                onClick={() => setSelectedPreviewId(suggestion.id)}
+                                className="group relative inline-block"
+                              >
+                                <img
+                                  src={suggestion.preview_image}
+                                  alt="Preview"
+                                  className="w-12 h-12 object-cover rounded border border-gray-300 cursor-pointer hover:border-blue-500 transition-all hover:shadow-md"
+                                  title="Click to view full preview"
+                                />
+                                <div className="absolute inset-0 rounded flex items-center justify-center bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all">
+                                  <span className="text-white text-sm opacity-0 group-hover:opacity-100 transition-opacity">👁</span>
+                                </div>
+                              </button>
+                            ) : (
+                              <div className="w-12 h-12 bg-gray-100 rounded border border-gray-300 flex items-center justify-center text-xs text-gray-400">
+                                —
+                              </div>
+                            )}
+                          </td>
                         </tr>
 
                         {/* Expanded Row - Current Values */}
@@ -944,6 +1075,20 @@ function FormMarkup() {
                                   </div>
                                 </div>
                               </div>
+
+                              {/* Full Preview Image */}
+                              {suggestion.preview_image && (
+                                <div className="mt-4 pt-4 border-t border-blue-300">
+                                  <span className="text-xs font-semibold text-gray-700 block mb-2">Field Preview:</span>
+                                  <div className="bg-gray-50 border border-gray-300 rounded p-3 flex justify-center">
+                                    <img
+                                      src={suggestion.preview_image}
+                                      alt="Field preview"
+                                      className="max-h-48 rounded border border-gray-200"
+                                    />
+                                  </div>
+                                </div>
+                              )}
 
                               {/* Properties Info */}
                               {getImportantProperties(suggestion.field_properties).length > 0 && (
