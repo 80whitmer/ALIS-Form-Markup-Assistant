@@ -31,6 +31,7 @@ export default function FormMarkupApproval() {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedRows, setSelectedRows] = useState(new Set());
   const [bulkSignerValue, setBulkSignerValue] = useState('');
+  const [expandedRows, setExpandedRows] = useState(new Set());
 
   const ITEMS_PER_PAGE = 25;
   const COLUMNS = 5;
@@ -134,6 +135,17 @@ export default function FormMarkupApproval() {
       newSelected.add(id);
     }
     setSelectedRows(newSelected);
+  };
+
+  // Toggle row expansion to show details
+  const toggleRowExpansion = (id) => {
+    const newExpanded = new Set(expandedRows);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
+    } else {
+      newExpanded.add(id);
+    }
+    setExpandedRows(newExpanded);
   };
 
   // Toggle select all on current page
@@ -242,6 +254,49 @@ export default function FormMarkupApproval() {
       <div className="card p-6 bg-red-50 border border-red-200">
         <p className="text-red-700 font-semibold">Job not found</p>
         <p className="text-sm text-red-600 mt-1">{error || 'Unable to load job details'}</p>
+      </div>
+    );
+  }
+
+  // Handle case where no fields were detected
+  if (job.status === 'error' || suggestions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="card">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <h1 className="text-2xl font-bold text-primary-900">{job.document_title || 'Form Analysis'}</h1>
+              <p className="text-sm text-neutral-600 mt-1">Form Markup Analysis</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="card p-8 bg-yellow-50 border-2 border-yellow-200">
+          <div className="flex items-start gap-4">
+            <div className="text-3xl">⚠️</div>
+            <div>
+              <h2 className="text-lg font-bold text-yellow-900 mb-2">No Form Fields Detected</h2>
+              <p className="text-yellow-800 mb-4">
+                This PDF does not contain any fillable form fields to analyze. Form Markup requires a PDF with interactive form fields (text boxes, signatures, checkboxes, etc.).
+              </p>
+              <div className="bg-white rounded p-4 mb-4 border border-yellow-200">
+                <p className="text-sm font-mono text-neutral-700">{job.message || 'No form fields detected in PDF'}</p>
+              </div>
+              <div className="space-y-2 text-sm text-yellow-900">
+                <p><strong>✓ This works with:</strong> PDFs created with forms (Adobe, Microsoft, etc.)</p>
+                <p><strong>✗ This won't work with:</strong> Scanned images, plain text PDFs, or PDFs without interactive fields</p>
+              </div>
+              <div className="mt-4 pt-4 border-t border-yellow-200">
+                <a
+                  href="/"
+                  className="text-yellow-700 hover:text-yellow-900 font-semibold text-sm"
+                >
+                  ← Back to upload
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -388,6 +443,7 @@ export default function FormMarkupApproval() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-neutral-200 bg-neutral-50">
+              <th className="text-center py-3 px-2 font-semibold text-primary-900 w-[40px]">•</th>
               <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[40px]">
                 <input
                   type="checkbox"
@@ -396,7 +452,7 @@ export default function FormMarkupApproval() {
                   className="w-4 h-4 rounded border-neutral-300 text-primary-600 cursor-pointer"
                 />
               </th>
-              <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[140px]">Current Field Name</th>
+              <th className="text-left py-3 px-4 font-semibold text-primary-900">Current Field Name</th>
               <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[100px]">Type</th>
               <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[140px]">Suggested Code</th>
               <th className="text-left py-3 px-4 font-semibold text-primary-900 w-[110px]">Signer</th>
@@ -410,29 +466,42 @@ export default function FormMarkupApproval() {
             {paginatedSuggestions.map((suggestion) => {
               const isApproved = suggestion.approval_status === 'approved';
               const isSelected = selectedRows.has(suggestion.id);
+              const isExpanded = expandedRows.has(suggestion.id);
 
               return (
-                <tr
-                  key={suggestion.id}
-                  className={`border-b border-neutral-100 hover:bg-neutral-50 transition-colors ${
-                    isApproved ? 'bg-green-50' : ''
-                  } ${isSelected ? 'bg-blue-100' : ''}`}
-                >
-                  <td className="py-3 px-4 text-center">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleRowSelection(suggestion.id)}
-                      className="w-4 h-4 rounded border-neutral-300 text-primary-600 cursor-pointer"
-                    />
-                  </td>
+                <>
+                  <tr
+                    key={suggestion.id}
+                    className={`border-b border-neutral-100 hover:bg-neutral-50 transition-colors ${
+                      isApproved ? 'bg-green-50' : ''
+                    } ${isSelected ? 'bg-blue-100' : ''}`}
+                  >
+                    {/* Expand Button */}
+                    <td className="py-3 px-2 text-center">
+                      <button
+                        onClick={() => toggleRowExpansion(suggestion.id)}
+                        className="text-primary-600 hover:text-primary-900 font-bold text-lg leading-none"
+                        title={isExpanded ? 'Hide details' : 'Show details & preview'}
+                      >
+                        {isExpanded ? '▼' : '▶'}
+                      </button>
+                    </td>
 
-                  {/* Current Field Name (from PDF) */}
-                  <td className="py-3 px-4">
-                    <code className="text-xs bg-neutral-100 px-2 py-1 rounded font-mono">
-                      {suggestion.field_name || '—'}
-                    </code>
-                  </td>
+                    <td className="py-3 px-4 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleRowSelection(suggestion.id)}
+                        className="w-4 h-4 rounded border-neutral-300 text-primary-600 cursor-pointer"
+                      />
+                    </td>
+
+                    {/* Current Field Name (from PDF) - Full Name */}
+                    <td className="py-3 px-4 max-w-md">
+                      <code className="text-xs bg-neutral-100 px-2 py-1 rounded font-mono break-all" title={suggestion.field_name}>
+                        {suggestion.field_name || '—'}
+                      </code>
+                    </td>
 
                   {/* Field Type */}
                   <td className="py-3 px-4">
@@ -507,6 +576,74 @@ export default function FormMarkupApproval() {
                     </button>
                   </td>
                 </tr>
+
+                {/* Detail Row (Expanded View) */}
+                {isExpanded && (
+                  <tr className="bg-blue-50 border-b border-neutral-100">
+                    <td colSpan="9" className="py-6 px-4">
+                      <div className="space-y-4">
+                        {/* Field Metadata */}
+                        <div className="grid grid-cols-2 gap-6">
+                          <div>
+                            <h3 className="font-semibold text-primary-900 mb-3">Field Information</h3>
+                            <div className="space-y-2 text-sm">
+                              <div>
+                                <label className="font-medium text-neutral-700">Full Field Name:</label>
+                                <p className="text-neutral-900 font-mono bg-white px-3 py-2 rounded mt-1 break-all">
+                                  {suggestion.field_name || '—'}
+                                </p>
+                              </div>
+                              <div>
+                                <label className="font-medium text-neutral-700">Page:</label>
+                                <p className="text-neutral-900">{suggestion.field_page || 1}</p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="font-medium text-neutral-700">X:</label>
+                                  <p className="text-neutral-900">{suggestion.field_x || '—'}</p>
+                                </div>
+                                <div>
+                                  <label className="font-medium text-neutral-700">Y:</label>
+                                  <p className="text-neutral-900">{suggestion.field_y || '—'}</p>
+                                </div>
+                                <div>
+                                  <label className="font-medium text-neutral-700">Width:</label>
+                                  <p className="text-neutral-900">{suggestion.field_width || '—'}</p>
+                                </div>
+                                <div>
+                                  <label className="font-medium text-neutral-700">Height:</label>
+                                  <p className="text-neutral-900">{suggestion.field_height || '—'}</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* PDF Preview */}
+                          <div>
+                            <h3 className="font-semibold text-primary-900 mb-3">Field Preview</h3>
+                            {suggestion.preview_image ? (
+                              <div className="bg-white border border-neutral-300 rounded p-2">
+                                <img
+                                  src={suggestion.preview_image}
+                                  alt="Field preview"
+                                  className="w-full h-auto rounded border border-neutral-200"
+                                />
+                                <p className="text-xs text-neutral-600 mt-2">
+                                  Cropped region showing field context
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="bg-white border border-neutral-300 rounded p-4 text-center text-neutral-500 h-32 flex items-center justify-center">
+                                <p className="text-xs">Preview image not available</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
               );
             })}
           </tbody>

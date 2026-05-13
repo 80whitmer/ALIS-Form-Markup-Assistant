@@ -1,0 +1,9 @@
+{
+  "watch": ["server", "form-markup-poc"],
+  "ignore": ["server/jobs/**", "server/tmp/**", "*.pdf", "*.json"],
+  "ext": "js,json",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 500
+}
