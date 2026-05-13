@@ -321,6 +321,16 @@ function FormMarkup() {
     }
   };
 
+  const handleRefineInManualEdit = () => {
+    alert(
+      'To refine these results in Manual Edit mode:\n\n' +
+      '1. Go to "New Analysis" to upload the PDF again\n' +
+      '2. Select "Manual Edit (current values)" as the workflow\n' +
+      '3. The manual editor will show all current field values for refinement\n\n' +
+      'This allows you to bulk edit field names, signers, and properties without re-analyzing.'
+    );
+  };
+
   if (loading) {
     return (
       <div className="text-center py-12">
@@ -401,20 +411,29 @@ function FormMarkup() {
         </div>
 
         {job.status === 'analyzed' || job.status === 'reviewed' ? (
-          <button
-            onClick={handleApprove}
-            disabled={applying || suggestions.length === 0}
-            className="flex items-center gap-2 text-white px-6 py-3 rounded-lg disabled:bg-gray-400 transition"
-            style={{
-              backgroundColor: '#FF5722',
-              '--tw-bg-opacity': '1'
-            }}
-            onMouseEnter={(e) => e.target.style.backgroundColor = '#E64A19'}
-            onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
-          >
-            <Download size={20} />
-            {applying ? 'Applying...' : 'Apply & Download'}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleApprove}
+              disabled={applying || suggestions.length === 0}
+              className="flex items-center gap-2 text-white px-6 py-3 rounded-lg disabled:bg-gray-400 transition"
+              style={{
+                backgroundColor: '#FF5722',
+                '--tw-bg-opacity': '1'
+              }}
+              onMouseEnter={(e) => e.target.style.backgroundColor = '#E64A19'}
+              onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
+            >
+              <Download size={20} />
+              {applying ? 'Applying...' : 'Apply & Download'}
+            </button>
+            <button
+              onClick={handleRefineInManualEdit}
+              disabled={applying || suggestions.length === 0}
+              className="flex items-center gap-2 text-gray-700 px-6 py-3 rounded-lg border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 transition"
+            >
+              ✏️ Refine in Manual Edit
+            </button>
+          </div>
         ) : null}
       </div>
 

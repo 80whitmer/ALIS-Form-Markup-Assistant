@@ -4,17 +4,25 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../db/database');
 const { runFormMarkupJob } = require('../services/form-markup');
+const { runManualEditJob } = require('../services/manual-edit-markup');
 
 const router = express.Router();
 
 // POST /api/jobs - Submit a new PDF for analysis
 router.post('/', async (req, res, next) => {
   try {
-    const { pdf, company_name, document_title, ocr_radius = 100, form_template, signers = [] } = req.body;
+    const { pdf, company_name, document_title, ocr_radius = 100, form_template, signers = [], workflow_type = 'auto_edit' } = req.body;
 
     if (!pdf || !company_name || !document_title) {
       return res.status(400).json({
         error: 'Missing required fields: pdf, company_name, document_title'
+      });
+    }
+
+    // Validate workflow type
+    if (!['auto_edit', 'manual_edit'].includes(workflow_type)) {
+      return res.status(400).json({
+        error: 'Invalid workflow_type. Must be "auto_edit" or "manual_edit"'
       });
     }
 
@@ -39,16 +47,19 @@ router.post('/', async (req, res, next) => {
     // Store signers as JSON string
     const signersJSON = signers && signers.length > 0 ? JSON.stringify(signers) : null;
 
-    // Create job record
+    // Create job record with workflow type
     await db.run(
-      `INSERT INTO jobs (id, company_name, document_title, ocr_radius, form_template, signers, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'analyzing')`,
-      [jobId, company_name, document_title, ocr_radius, form_template || null, signersJSON]
+      `INSERT INTO jobs (id, company_name, document_title, ocr_radius, form_template, signers, workflow_type, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'analyzing')`,
+      [jobId, company_name, document_title, ocr_radius, form_template || null, signersJSON, workflow_type]
     );
 
     // Start analysis in background (non-blocking)
     setImmediate(() => {
-      runFormMarkupJob(jobId, {
+      // Route to appropriate job processor based on workflow type
+      const jobProcessor = workflow_type === 'manual_edit' ? runManualEditJob : runFormMarkupJob;
+
+      jobProcessor(jobId, {
         pdfPath: inputPath,
         companyName: company_name,
         documentTitle: document_title,
@@ -67,6 +78,7 @@ router.post('/', async (req, res, next) => {
     res.status(202).json({
       jobId,
       status: 'analyzing',
+      workflowType: workflow_type,
       createdAt: new Date().toISOString()
     });
 

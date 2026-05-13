@@ -2,7 +2,7 @@ import React from 'react';
 import { Routes, Route, Link } from 'react-router-dom';
 import Upload from './pages/Upload';
 import JobHistory from './pages/JobHistory';
-import FormMarkup from './pages/FormMarkup';
+import FormMarkupRouter from './pages/FormMarkupRouter';
 import JobDetail from './pages/JobDetail';
 import { APP_VERSION, APP_NAME, APP_TAGLINE } from './config';
 
@@ -35,7 +35,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Upload />} />
           <Route path="/history" element={<JobHistory />} />
-          <Route path="/jobs/:jobId" element={<FormMarkup />} />
+          <Route path="/jobs/:jobId" element={<FormMarkupRouter />} />
           <Route path="/jobs/:jobId/detail" element={<JobDetail />} />
         </Routes>
       </main>

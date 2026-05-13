@@ -15,6 +15,7 @@ function Upload() {
   ]);
   const [newSignerName, setNewSignerName] = useState('');
   const [alisAggressiveness, setAlisAggressiveness] = useState('low');
+  const [workflowType, setWorkflowType] = useState('auto_edit');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -81,7 +82,8 @@ function Upload() {
           document_title: documentTitle,
           ocr_radius: ocrRadius,
           alis_aggressiveness: alisAggressiveness,
-          signers: signers.map(s => s.name)
+          signers: signers.map(s => s.name),
+          workflow_type: workflowType
         });
 
         const { jobId } = response.data;
@@ -177,6 +179,38 @@ function Upload() {
                 onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
                 disabled={loading}
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                Workflow Type
+              </label>
+              <div className="flex gap-2">
+                {[
+                  { value: 'auto_edit', label: 'Auto Edit (OCR suggestions)', desc: 'Analyze with OCR to predict field names and signers' },
+                  { value: 'manual_edit', label: 'Manual Edit (current values)', desc: 'Edit current field values without OCR predictions' }
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setWorkflowType(option.value)}
+                    disabled={loading}
+                    className="flex-1 px-4 py-3 rounded-lg font-medium transition disabled:cursor-not-allowed text-sm"
+                    style={{
+                      backgroundColor: workflowType === option.value ? '#FF9800' : '#E8E8E8',
+                      color: workflowType === option.value ? 'white' : '#666',
+                      opacity: loading ? 0.6 : 1
+                    }}
+                    onMouseEnter={(e) => !loading && workflowType !== option.value && (e.target.style.backgroundColor = '#F0F0F0')}
+                    onMouseLeave={(e) => !loading && (e.target.style.backgroundColor = workflowType === option.value ? '#FF9800' : '#E8E8E8')}
+                  >
+                    <div className="text-left">
+                      <p className="font-semibold">{option.label}</p>
+                      <p className="text-xs opacity-80">{option.desc}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div>

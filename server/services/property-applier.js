@@ -192,7 +192,7 @@ async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
  * 1. Loads the PDF with pdf-lib (to validate structure)
  * 2. Saves it unchanged to output path
  * 3. Post-processes with Python/pikepdf for all field updates:
- *    - Updates field names to ALIS format (code|anchor)
+ *    - Updates field names to ALIS format (code|anchor) [skipped for manual edit]
  *    - Sets required flag
  *    - Sets read-only flag
  *    - Adds tooltips
@@ -201,9 +201,10 @@ async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
  * @param {string} inputPath - Full path to original PDF
  * @param {array} suggestions - Array of suggestion objects (with approval_status = 'approved')
  * @param {string} outputPath - Full path to save modified PDF
+ * @param {boolean} isManualEdit - Whether this is a manual edit job (default: false)
  * @returns {object} Summary of changes made
  */
-async function applyChangesToPDF(inputPath, suggestions, outputPath) {
+async function applyChangesToPDF(inputPath, suggestions, outputPath, isManualEdit = false) {
   try {
     console.log(`[applier] Loading PDF from ${inputPath}`);
 
