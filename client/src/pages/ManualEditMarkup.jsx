@@ -40,6 +40,7 @@ function ManualEditMarkup() {
   const [progress, setProgress] = useState(0);
   const [progressPhase, setProgressPhase] = useState(''); // Show what phase we're in
   const [selectedPreviewId, setSelectedPreviewId] = useState(null);
+  const [hasLocalEdits, setHasLocalEdits] = useState(false); // Track if there are unsaved local edits
 
   // Poll progress while loading
   useEffect(() => {
@@ -67,12 +68,13 @@ function ManualEditMarkup() {
   useEffect(() => {
     fetchJobDetails();
     const interval = setInterval(() => {
-      if (!job || (job.status !== 'reviewed' && job.status !== 'applied')) {
+      // Only auto-fetch if no local edits and job is still processing
+      if (!hasLocalEdits && (!job || (job.status !== 'reviewed' && job.status !== 'applied'))) {
         fetchJobDetails();
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [jobId, job?.status]);
+  }, [jobId, job?.status, hasLocalEdits]);
 
   const fetchJobDetails = async () => {
     try {
@@ -194,6 +196,7 @@ function ManualEditMarkup() {
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
+      setHasLocalEdits(false); // Clear local edits flag after successful save
     } catch (err) {
       console.error('[applyBulkProperties] Error:', err);
       console.error('[applyBulkProperties] Response data:', err.response?.data);
@@ -274,6 +277,7 @@ function ManualEditMarkup() {
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
+      setHasLocalEdits(false); // Clear local edits flag after successful save
     } catch (err) {
       console.error('[applyBulkSigners] Error:', err);
       console.error('[applyBulkSigners] Response data:', err.response?.data);
@@ -293,6 +297,7 @@ function ManualEditMarkup() {
     const updated = [...suggestions];
     updated[index] = { ...updated[index], [field]: value };
     setSuggestions(updated);
+    setHasLocalEdits(true); // Mark that there are unsaved edits
   };
 
   // Filter and pagination
@@ -733,7 +738,7 @@ function ManualEditMarkup() {
             </thead>
             <tbody>
               {filteredSuggestions.map((s, idx) => (
-                <React.Fragment key={s.field_name}>
+                <React.Fragment key={idx}>
                   <tr className="border-b border-gray-200 hover:bg-gray-50">
                     <td className="px-4 py-3">
                       <input
