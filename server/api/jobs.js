@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
@@ -8,14 +9,42 @@ const { runManualEditJob } = require('../services/manual-edit-markup');
 
 const router = express.Router();
 
-// POST /api/jobs - Submit a new PDF for analysis
-router.post('/', async (req, res, next) => {
-  try {
-    const { pdf, company_name, document_title, ocr_radius = 100, form_template, signers = [], workflow_type = 'auto_edit' } = req.body;
+// Multer configuration for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.originalname.endsWith('.pdf')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'));
+    }
+  }
+});
 
-    if (!pdf || !company_name || !document_title) {
+// POST /api/jobs - Submit a new PDF for analysis
+router.post('/', upload.single('pdf'), async (req, res, next) => {
+  try {
+    // Handle both FormData (from frontend) and legacy base64 JSON
+    let pdfBuffer;
+    const { company_name, document_title, ocr_radius = 100, form_template, signers = [], workflow_type = 'auto_edit' } = req.body;
+
+    // Get PDF either from multer file or from base64 body
+    if (req.file) {
+      // FormData: file is in req.file
+      pdfBuffer = req.file.buffer;
+    } else if (req.body.pdf && req.body.pdf.startsWith('data:application/pdf')) {
+      // Legacy: base64 data URL in body
+      pdfBuffer = Buffer.from(req.body.pdf.split(',')[1], 'base64');
+    } else {
       return res.status(400).json({
-        error: 'Missing required fields: pdf, company_name, document_title'
+        error: 'Missing required field: pdf file'
+      });
+    }
+
+    if (!company_name || !document_title) {
+      return res.status(400).json({
+        error: 'Missing required fields: company_name, document_title'
       });
     }
 
@@ -26,13 +55,6 @@ router.post('/', async (req, res, next) => {
       });
     }
 
-    // Validate base64 PDF
-    if (typeof pdf !== 'string' || !pdf.startsWith('data:application/pdf')) {
-      return res.status(400).json({
-        error: 'Invalid PDF format. Expected base64 data URL.'
-      });
-    }
-
     const jobId = uuidv4();
 
     // Create job directory
@@ -40,7 +62,6 @@ router.post('/', async (req, res, next) => {
     fs.mkdirSync(jobDir, { recursive: true });
 
     // Save input PDF
-    const pdfBuffer = Buffer.from(pdf.split(',')[1], 'base64');
     const inputPath = path.join(jobDir, 'input.pdf');
     fs.writeFileSync(inputPath, pdfBuffer);
 
@@ -231,6 +252,59 @@ router.get('/:jobId/suggestions', async (req, res, next) => {
   }
 });
 
+// PATCH /api/jobs/:jobId/suggestions - Update suggestions (auto-save for bulk operations)
+router.patch('/:jobId/suggestions', async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { suggestions: suggestionsToUpdate } = req.body;
+
+    const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    if (!suggestionsToUpdate || !Array.isArray(suggestionsToUpdate)) {
+      return res.status(400).json({ error: 'Invalid suggestions array' });
+    }
+
+    // Update each suggestion in the database
+    let updatedCount = 0;
+    for (const suggestion of suggestionsToUpdate) {
+      await db.run(
+        `UPDATE suggestions
+         SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
+         WHERE job_id = ? AND field_name = ?`,
+        [
+          suggestion.field_name,
+          suggestion.signer || null,
+          suggestion.required ? 1 : 0,
+          suggestion.read_only ? 1 : 0,
+          suggestion.field_type,
+          jobId,
+          suggestion.field_name_original || suggestion.field_name
+        ]
+      );
+      updatedCount++;
+    }
+
+    // Fetch updated suggestions to return
+    const updatedSuggestions = await db.all(
+      'SELECT * FROM suggestions WHERE job_id = ? ORDER BY field_page, id',
+      [jobId]
+    );
+
+    res.json({
+      jobId,
+      message: `Updated ${updatedCount} suggestions`,
+      suggestions: updatedSuggestions,
+      updatedCount
+    });
+
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/jobs/:jobId/apply - Apply suggestions to PDF
 router.post('/:jobId/apply', async (req, res, next) => {
   try {
@@ -319,18 +393,27 @@ router.get('/:jobId/progress', async (req, res, next) => {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    // Calculate progress based on status
+    // Calculate progress based on status and phase
     let percentage = 0;
+    let phaseDisplay = job.progress_phase || 'Initializing';
+
     switch (job.status) {
       case 'analyzing':
-        percentage = 50; // Half-way through when analyzing
+        // Map phase to percentage
+        if (phaseDisplay.includes('Detecting')) percentage = 15;
+        else if (phaseDisplay.includes('Generating suggestions')) percentage = 35;
+        else if (phaseDisplay.includes('Generating previews')) percentage = 65;
+        else if (phaseDisplay.includes('Storing')) percentage = 85;
+        else percentage = 50;
         break;
       case 'completed':
       case 'applied':
         percentage = 100; // Done
+        phaseDisplay = 'Complete';
         break;
       case 'failed':
         percentage = 100;
+        phaseDisplay = 'Failed';
         break;
       default:
         percentage = 25;
@@ -340,6 +423,7 @@ router.get('/:jobId/progress', async (req, res, next) => {
       jobId,
       status: job.status,
       percentage: Math.min(Math.max(percentage, 0), 100),
+      phase: phaseDisplay,
       label: job.document_title || 'Processing PDF',
       updated_at: job.updated_at || job.created_at
     });

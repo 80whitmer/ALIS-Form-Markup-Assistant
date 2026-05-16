@@ -224,6 +224,7 @@ async function runManualEditJob(jobId, options) {
   try {
     // Phase 1: Detect fields
     console.log(`[${jobId}] Phase 1: Detecting AcroForm fields...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Detecting fields...', jobId]);
     let fields = await detectFieldsFromPDF(pdfPath);
     console.log(`[${jobId}] Detected ${fields.length} fields`);
 
@@ -241,6 +242,7 @@ async function runManualEditJob(jobId, options) {
 
     // Phase 2: Generate suggestions from current values (no OCR, no predictions)
     console.log(`[${jobId}] Phase 2: Generating suggestions from current field values...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating suggestions...', jobId]);
     const suggestions = fields.map((field, idx) => {
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
       const displayFieldName = getDisplayFieldName(field.field_name, duplicateInfo);
@@ -265,6 +267,7 @@ async function runManualEditJob(jobId, options) {
 
     // Phase 3: Generate preview images
     console.log(`[${jobId}] Phase 3: Generating field preview images for ${suggestions.length} fields...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating previews...', jobId]);
     const suggestionsWithPreviews = [];
     const previewBatchSize = 3;
 
@@ -320,6 +323,7 @@ async function runManualEditJob(jobId, options) {
 
     // Phase 4: Store suggestions in database
     console.log(`[${jobId}] Phase 4: Storing suggestions in database...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Storing data...', jobId]);
     for (const suggestion of suggestionsWithPreviews) {
       try {
         await db.run(

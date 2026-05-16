@@ -262,6 +262,7 @@ async function runFormMarkupJob(jobId, options) {
   try {
     // Phase 1: Detect fields with correct page numbers
     console.log(`[${jobId}] Phase 1: Detecting AcroForm fields...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Detecting fields...', jobId]);
     let fields = await detectFieldsFromPDF(pdfPath);
     console.log(`[${jobId}] Detected ${fields.length} fields`);
 
@@ -308,6 +309,7 @@ async function runFormMarkupJob(jobId, options) {
 
     // Phase 2: Generate basic suggestions
     console.log(`[${jobId}] Phase 2: Generating suggestions...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating suggestions...', jobId]);
     const suggestions = fields.map((field, idx) => {
       // Normalize field type: button -> check (buttons are checkboxes)
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
@@ -369,6 +371,7 @@ async function runFormMarkupJob(jobId, options) {
 
     // Phase 3b: Generate preview images (with concurrency limit)
     console.log(`[${jobId}] Phase 3b: Generating field preview images for ${suggestionsWithAlis.length} fields...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating previews...', jobId]);
     const suggestionsWithPreviews = [];
     const previewBatchSize = 3;
 
@@ -424,6 +427,7 @@ async function runFormMarkupJob(jobId, options) {
 
     // Phase 3c: Store suggestions in database
     console.log(`[${jobId}] Phase 3c: Storing suggestions in database...`);
+    await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Storing data...', jobId]);
     for (const suggestion of suggestionsWithPreviews) {
       const anchorName = generateAnchor(suggestion.field_name, suggestion.field_type, suggestion.field_page, suggestion.signer);
 

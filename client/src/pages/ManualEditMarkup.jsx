@@ -28,10 +28,17 @@ function ManualEditMarkup() {
   const [signerFilter, setSignerFilter] = useState('');
   const [bulkSignerValue, setBulkSignerValue] = useState('');
   const [showBulkSignerPanel, setShowBulkSignerPanel] = useState(false);
+  const [savingBulkChanges, setSavingBulkChanges] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null); // 'saving', 'saved', 'error'
+  const [extractedSigners, setExtractedSigners] = useState([]); // Anchors extracted from field names
+  const [customSigners, setCustomSigners] = useState([]); // User-created signers
+  const [showNewSignerDialog, setShowNewSignerDialog] = useState(false);
+  const [newSignerName, setNewSignerName] = useState('');
   const PAGINATION_COLUMNS = 10;
 
   // Progress bar and preview state
   const [progress, setProgress] = useState(0);
+  const [progressPhase, setProgressPhase] = useState(''); // Show what phase we're in
   const [selectedPreviewId, setSelectedPreviewId] = useState(null);
 
   // Poll progress while loading
@@ -44,6 +51,7 @@ function ManualEditMarkup() {
         if (progressRes.ok) {
           const progressData = await progressRes.json();
           setProgress(progressData.percentage || 0);
+          setProgressPhase(progressData.phase || 'Processing...');
         }
       } catch (err) {
         console.debug('[progress] Poll error:', err.message);
@@ -71,10 +79,39 @@ function ManualEditMarkup() {
       const response = await axios.get(`/api/jobs/${jobId}`);
       setJob(response.data.job);
       setSuggestions(response.data.suggestions || []);
+
+      // Extract signers/anchors from field names
+      const extracted = extractSignersFromFieldNames(response.data.suggestions || []);
+      setExtractedSigners(extracted);
+
       setLoading(false);
     } catch (err) {
       setError(err.message);
       setLoading(false);
+    }
+  };
+
+  // Extract anchors from field names (first part before dot)
+  const extractSignersFromFieldNames = (suggestions) => {
+    const signers = new Set();
+    suggestions.forEach(s => {
+      const fieldName = s.field_name || '';
+      // Extract the anchor (part before first dot)
+      const match = fieldName.match(/^([^.\[]+)/);
+      if (match && match[1]) {
+        signers.add(match[1]);
+      }
+    });
+    return Array.from(signers).sort();
+  };
+
+  // Create new signer
+  const handleAddNewSigner = () => {
+    if (newSignerName.trim() && !customSigners.includes(newSignerName)) {
+      setCustomSigners([...customSigners, newSignerName]);
+      setBulkSignerValue(newSignerName);
+      setNewSignerName('');
+      setShowNewSignerDialog(false);
     }
   };
 
@@ -113,7 +150,7 @@ function ManualEditMarkup() {
     });
   };
 
-  const applyBulkProperties = () => {
+  const applyBulkProperties = async () => {
     const updated = suggestions.map(s => {
       if (selectedFields.has(s.field_name)) {
         return {
@@ -125,25 +162,102 @@ function ManualEditMarkup() {
       }
       return s;
     });
+
+    // Update local state immediately for UI feedback
     setSuggestions(updated);
     setShowBulkPanel(false);
-    setBulkProperties({ required: null, read_only: null, border: null });
+    setSavingBulkChanges(true);
+    setSaveStatus('saving');
+
+    try {
+      // Send to backend to persist
+      const response = await axios.patch(`/api/jobs/${jobId}/suggestions`, {
+        suggestions: updated
+      });
+
+      // Refresh from backend to confirm save
+      if (response.data.suggestions) {
+        setSuggestions(response.data.suggestions);
+      }
+
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
+    } catch (err) {
+      console.error('Error saving bulk properties:', err);
+      setSaveStatus('error');
+      alert('✗ Error saving changes: ' + (err.response?.data?.error || err.message));
+      // Revert to previous state on error
+      fetchJobDetails();
+    } finally {
+      setSavingBulkChanges(false);
+      setBulkProperties({ required: null, read_only: null, border: null });
+      setSelectedFields(new Set());
+    }
   };
 
-  const applyBulkSigner = () => {
+  const updateFieldNameAnchor = (fieldName, newAnchor) => {
+    // Extract the current anchor (part before first dot)
+    const match = fieldName.match(/^([^.\[]+)(.*)/);
+    if (match && match[2]) {
+      // Replace the anchor with the new one
+      return `${newAnchor}${match[2]}`;
+    }
+    return fieldName;
+  };
+
+  const applyBulkSigner = async () => {
     if (!bulkSignerValue) {
       setShowBulkSignerPanel(false);
       return;
     }
+
     const updated = suggestions.map(s => {
       if (selectedFields.has(s.field_name)) {
-        return { ...s, signer: bulkSignerValue };
+        // If the new signer is an extracted anchor, also update the field name prefix
+        const isExtractedAnchor = extractedSigners.includes(bulkSignerValue);
+        const newFieldName = isExtractedAnchor
+          ? updateFieldNameAnchor(s.field_name, bulkSignerValue)
+          : s.field_name;
+
+        return {
+          ...s,
+          signer: bulkSignerValue,
+          field_name: newFieldName
+        };
       }
       return s;
     });
+
+    // Update local state immediately for UI feedback
     setSuggestions(updated);
     setShowBulkSignerPanel(false);
-    setBulkSignerValue('');
+    setSavingBulkChanges(true);
+    setSaveStatus('saving');
+
+    try {
+      // Send to backend to persist
+      const response = await axios.patch(`/api/jobs/${jobId}/suggestions`, {
+        suggestions: updated
+      });
+
+      // Refresh from backend to confirm save
+      if (response.data.suggestions) {
+        setSuggestions(response.data.suggestions);
+      }
+
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
+    } catch (err) {
+      console.error('Error saving bulk signer:', err);
+      setSaveStatus('error');
+      alert('✗ Error saving changes: ' + (err.response?.data?.error || err.message));
+      // Revert to previous state on error
+      fetchJobDetails();
+    } finally {
+      setSavingBulkChanges(false);
+      setBulkSignerValue('');
+      setSelectedFields(new Set());
+    }
   };
 
   const updateSuggestion = (index, field, value) => {
@@ -165,10 +279,23 @@ function ManualEditMarkup() {
   const uniqueSigners = [...new Set(suggestions.map(s => s.signer).filter(Boolean))];
 
   const getAvailableSigners = () => {
+    // Combine: extracted anchors + custom signers + base signers from job
+    const signers = new Set();
+
+    // Add extracted signers (from field names)
+    extractedSigners.forEach(s => signers.add(s));
+
+    // Add custom signers
+    customSigners.forEach(s => signers.add(s));
+
+    // Add base signers from job config
     if (job?.signers) {
-      return JSON.parse(job.signers);
+      JSON.parse(job.signers).forEach(s => signers.add(s));
+    } else {
+      ['Resident', 'Staff', 'Family', 'Physician'].forEach(s => signers.add(s));
     }
-    return ['Resident', 'Staff', 'Family', 'Physician'];
+
+    return Array.from(signers).sort();
   };
 
   const handleApplyChanges = async () => {
@@ -202,12 +329,56 @@ function ManualEditMarkup() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-gray-800 mb-2">Analyzing PDF...</h2>
-            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-              <div className="bg-gradient-to-r from-blue-500 to-blue-600 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
+          <div className="mb-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-4">Processing PDF Form</h2>
+
+            {/* Progress Bar */}
+            <div className="mb-4">
+              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-blue-500 to-blue-600 h-full transition-all duration-500"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-2 text-right">{progress}% complete</p>
             </div>
-            <p className="text-sm text-gray-600 mt-2">{progress}% complete</p>
+
+            {/* Phase Indicator */}
+            <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+              <p className="text-sm text-gray-600 mb-2">Current phase:</p>
+              <p className="text-base font-semibold text-blue-700 flex items-center gap-2">
+                <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                {progressPhase || 'Initializing...'}
+              </p>
+            </div>
+
+            {/* Phase Steps */}
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center gap-3 text-sm">
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-semibold ${progress >= 15 ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                  {progress >= 15 ? '✓' : '1'}
+                </span>
+                <span className={progress >= 15 ? 'text-gray-700 line-through' : 'text-gray-600'}>Detecting fields</span>
+              </div>
+              <div className="flex items-center gap-3 text-sm">
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-semibold ${progress >= 35 ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                  {progress >= 35 ? '✓' : '2'}
+                </span>
+                <span className={progress >= 35 ? 'text-gray-700 line-through' : 'text-gray-600'}>Generating suggestions</span>
+              </div>
+              <div className="flex items-center gap-3 text-sm">
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-semibold ${progress >= 65 ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                  {progress >= 65 ? '✓' : '3'}
+                </span>
+                <span className={progress >= 65 ? 'text-gray-700 line-through' : 'text-gray-600'}>Generating previews</span>
+              </div>
+              <div className="flex items-center gap-3 text-sm">
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-semibold ${progress >= 85 ? 'bg-green-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                  {progress >= 85 ? '✓' : '4'}
+                </span>
+                <span className={progress >= 85 ? 'text-gray-700 line-through' : 'text-gray-600'}>Storing data</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -328,9 +499,22 @@ function ManualEditMarkup() {
         {/* Bulk Operations Panel */}
         {selectedFields.size > 0 && (
           <div className="bg-blue-50 rounded-lg shadow-md p-6 mb-6 border-l-4 border-blue-500">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              Bulk Edit ({selectedFields.size} selected)
-            </h3>
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">
+                Bulk Edit ({selectedFields.size} selected)
+              </h3>
+              {saveStatus && (
+                <div className={`text-sm font-medium px-3 py-1 rounded ${
+                  saveStatus === 'saving' ? 'bg-blue-100 text-blue-700' :
+                  saveStatus === 'saved' ? 'bg-green-100 text-green-700' :
+                  'bg-red-100 text-red-700'
+                }`}>
+                  {saveStatus === 'saving' && '💾 Saving...'}
+                  {saveStatus === 'saved' && '✓ Saved'}
+                  {saveStatus === 'error' && '✗ Error'}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
               <button
                 onClick={() => setShowBulkSignerPanel(!showBulkSignerPanel)}
@@ -358,23 +542,74 @@ function ManualEditMarkup() {
 
             {showBulkSignerPanel && (
               <div className="bg-white rounded border border-gray-300 p-4 mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Signer</label>
-                <select
-                  value={bulkSignerValue}
-                  onChange={(e) => setBulkSignerValue(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Select a signer...</option>
-                  {getAvailableSigners().map(s => (
-                    <option key={s} value={s.toLowerCase()}>{s}</option>
-                  ))}
-                </select>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Signer/Anchor</label>
+                <div className="flex gap-2 mb-3">
+                  <select
+                    value={bulkSignerValue}
+                    onChange={(e) => setBulkSignerValue(e.target.value)}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  >
+                    <option value="">Select a signer...</option>
+                    {getAvailableSigners().map(s => {
+                      const isExtracted = extractedSigners.includes(s);
+                      const isCustom = customSigners.includes(s);
+                      const label = s + (isExtracted ? ' (from PDF)' : isCustom ? ' (custom)' : '');
+                      return (
+                        <option key={s} value={s.toLowerCase()}>{label}</option>
+                      );
+                    })}
+                  </select>
+                  <button
+                    onClick={() => setShowNewSignerDialog(true)}
+                    className="px-3 py-2 bg-green-600 text-white rounded text-sm hover:bg-green-700 font-medium"
+                    title="Create a new signer/anchor"
+                  >
+                    + New
+                  </button>
+                </div>
                 <button
                   onClick={applyBulkSigner}
-                  className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  disabled={!bulkSignerValue}
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-400"
                 >
                   Apply
                 </button>
+
+                {/* New Signer Dialog */}
+                {showNewSignerDialog && (
+                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 max-w-sm w-full">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">Create New Signer/Anchor</h3>
+                      <input
+                        type="text"
+                        value={newSignerName}
+                        onChange={(e) => setNewSignerName(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleAddNewSigner()}
+                        placeholder="e.g., supervisor, facility_admin"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        autoFocus
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => {
+                            setShowNewSignerDialog(false);
+                            setNewSignerName('');
+                          }}
+                          className="px-4 py-2 bg-gray-300 text-gray-900 rounded hover:bg-gray-400 text-sm"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleAddNewSigner}
+                          disabled={!newSignerName.trim()}
+                          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 text-sm"
+                        >
+                          Create
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

@@ -71,25 +71,19 @@ function Upload() {
     setError(null);
 
     try {
-      // Convert file to base64
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64PDF = reader.result;
+      // Create FormData with actual file (not base64)
+      const formData = new FormData();
+      formData.append('pdf', file);
+      formData.append('company_name', companyName);
+      formData.append('document_title', documentTitle);
+      formData.append('ocr_radius', ocrRadius.toString());
+      formData.append('alis_aggressiveness', alisAggressiveness);
+      signers.forEach(s => formData.append('signers', s.name));
+      formData.append('workflow_type', workflowType);
 
-        const response = await axios.post('/api/jobs', {
-          pdf: base64PDF,
-          company_name: companyName,
-          document_title: documentTitle,
-          ocr_radius: ocrRadius,
-          alis_aggressiveness: alisAggressiveness,
-          signers: signers.map(s => s.name),
-          workflow_type: workflowType
-        });
-
-        const { jobId } = response.data;
-        navigate(`/jobs/${jobId}`);
-      };
-      reader.readAsDataURL(file);
+      const response = await axios.post('/api/jobs', formData);
+      const { jobId } = response.data;
+      navigate(`/jobs/${jobId}`);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to submit PDF');
       setLoading(false);
