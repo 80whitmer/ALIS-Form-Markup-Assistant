@@ -537,9 +537,14 @@ function ManualEditMarkup() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Signers</option>
-                {uniqueSigners.map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
+                {getAvailableSigners().map(s => {
+                  const isExtracted = extractedSigners.includes(s);
+                  const isCustom = customSigners.includes(s);
+                  const label = s + (isExtracted ? ' (from PDF)' : isCustom ? ' (custom)' : '');
+                  return (
+                    <option key={s} value={s.toLowerCase()}>{label}</option>
+                  );
+                })}
               </select>
             </div>
             <div className="flex items-end">
