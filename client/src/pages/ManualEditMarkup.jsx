@@ -299,7 +299,12 @@ function ManualEditMarkup() {
   const filteredSuggestions = suggestions.filter(s => {
     if (selectedPage !== 'ALL' && s.field_page !== parseInt(selectedPage)) return false;
     if (typeFilter && s.field_type !== typeFilter) return false;
-    if (signerFilter && s.signer !== signerFilter) return false;
+
+    // For signer filter: extract anchor from field name and compare (case-insensitive)
+    if (signerFilter) {
+      const fieldNameAnchor = (s.field_name || '').match(/^([^.\[]+)/)?.[1] || '';
+      if (fieldNameAnchor.toLowerCase() !== signerFilter.toLowerCase()) return false;
+    }
     return true;
   });
 
