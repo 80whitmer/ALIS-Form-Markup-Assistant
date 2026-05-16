@@ -13,6 +13,8 @@ function JobHistory() {
   const [deleting, setDeleting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [selectedJobs, setSelectedJobs] = useState(new Set()); // Track selected jobs for bulk delete
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false); // Bulk delete confirmation
 
   useEffect(() => {
     fetchJobs();
@@ -57,6 +59,44 @@ function JobHistory() {
       setError(err.response?.data?.error || 'Failed to delete job');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    try {
+      setDeleting(true);
+      // Delete each selected job
+      const deletePromises = Array.from(selectedJobs).map(jobId =>
+        axios.delete(`/api/jobs/${jobId}`)
+      );
+      await Promise.all(deletePromises);
+      // Remove deleted jobs from list
+      setJobs(jobs.filter(job => !selectedJobs.has(job.id)));
+      setSelectedJobs(new Set());
+      setBulkDeleteConfirm(false);
+      setError(null);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete jobs');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const toggleJobSelection = (jobId) => {
+    const newSelected = new Set(selectedJobs);
+    if (newSelected.has(jobId)) {
+      newSelected.delete(jobId);
+    } else {
+      newSelected.add(jobId);
+    }
+    setSelectedJobs(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedJobs.size === jobs.length) {
+      setSelectedJobs(new Set());
+    } else {
+      setSelectedJobs(new Set(jobs.map(job => job.id)));
     }
   };
 
@@ -126,6 +166,26 @@ function JobHistory() {
         </div>
       )}
 
+      {selectedJobs.size > 0 && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded flex items-center justify-between">
+          <span className="text-sm text-blue-700">
+            {selectedJobs.size} job{selectedJobs.size !== 1 ? 's' : ''} selected
+          </span>
+          <button
+            onClick={() => setBulkDeleteConfirm(true)}
+            className="px-4 py-2 text-white rounded text-sm transition flex items-center gap-2"
+            style={{
+              backgroundColor: '#FF5722'
+            }}
+            onMouseEnter={(e) => e.target.style.backgroundColor = '#E64A19'}
+            onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
+          >
+            <Trash2 size={16} />
+            Delete Selected
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-12">
           <p className="text-gray-500">Loading jobs...</p>
@@ -142,6 +202,15 @@ function JobHistory() {
           <table className="w-full">
             <thead className="bg-gray-50 border-b">
               <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase w-10">
+                  <input
+                    type="checkbox"
+                    checked={selectedJobs.size === jobs.length && jobs.length > 0}
+                    onChange={toggleSelectAll}
+                    className="w-4 h-4 cursor-pointer"
+                    title="Select all jobs"
+                  />
+                </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                   Company
                 </th>
@@ -161,7 +230,15 @@ function JobHistory() {
             </thead>
             <tbody>
               {jobs.map((job) => (
-                <tr key={job.id} className="border-b hover:bg-gray-50">
+                <tr key={job.id} className={`border-b ${selectedJobs.has(job.id) ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                  <td className="px-6 py-4 text-sm w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedJobs.has(job.id)}
+                      onChange={() => toggleJobSelection(job.id)}
+                      className="w-4 h-4 cursor-pointer"
+                    />
+                  </td>
                   <td className="px-6 py-4 text-sm">{job.company_name}</td>
                   <td className="px-6 py-4 text-sm">{job.document_title}</td>
                   <td className="px-6 py-4">
@@ -282,6 +359,43 @@ function JobHistory() {
               >
                 <RotateCcw size={16} />
                 {resetting ? 'Resetting...' : 'Reset Database'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {bulkDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm">
+            <h2 className="text-xl font-bold mb-4" style={{ color: '#FF5722' }}>Delete {selectedJobs.size} Job{selectedJobs.size !== 1 ? 's' : ''}?</h2>
+            <p className="text-gray-700 mb-2">
+              Are you sure you want to delete the selected {selectedJobs.size} job{selectedJobs.size !== 1 ? 's' : ''}?
+            </p>
+            <p className="text-sm text-gray-500 mb-6">
+              This action cannot be undone. All associated files and records will be deleted.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setBulkDeleteConfirm(false)}
+                disabled={deleting}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={deleting}
+                className="px-4 py-2 text-white rounded disabled:opacity-50 flex items-center gap-2 transition"
+                style={{
+                  backgroundColor: '#FF5722'
+                }}
+                onMouseEnter={(e) => e.target.style.backgroundColor = '#E64A19'}
+                onMouseLeave={(e) => e.target.style.backgroundColor = '#FF5722'}
+              >
+                <Trash2 size={16} />
+                {deleting ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>
