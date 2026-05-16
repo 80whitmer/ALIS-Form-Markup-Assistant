@@ -455,7 +455,7 @@ function ManualEditMarkup() {
 
       {/* Add top padding when progress bar is visible */}
       <div className={job?.status === 'analyzing' ? 'pt-20' : ''}>
-        <div className="max-w-7xl mx-auto">
+        <div className="max-w-full mx-auto">
           {/* Header */}
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Manual Edit Mode</h1>
@@ -708,8 +708,8 @@ function ManualEditMarkup() {
         )}
 
         {/* Fields Table */}
-        <div className="bg-white rounded-lg shadow-md overflow-hidden">
-          <table className="w-full border-collapse">
+        <div className="bg-white rounded-lg shadow-md overflow-hidden overflow-x-auto">
+          <table className="w-full border-collapse whitespace-nowrap">
             <thead className="bg-gray-100 border-b-2 border-gray-300">
               <tr>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 w-10">
@@ -748,7 +748,7 @@ function ManualEditMarkup() {
                         type="text"
                         value={s.field_name}
                         onChange={(e) => updateSuggestion(idx, 'field_name', e.target.value)}
-                        className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[380px]"
                       />
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">{s.field_type}</td>
