@@ -58,7 +58,7 @@ function ManualEditMarkup() {
       }
     };
 
-    const interval = setInterval(pollProgress, 500);
+    const interval = setInterval(pollProgress, 200);
     pollProgress();
 
     return () => clearInterval(interval);
@@ -170,10 +170,22 @@ function ManualEditMarkup() {
     setSaveStatus('saving');
 
     try {
-      // Send to backend to persist
-      const response = await axios.patch(`/api/jobs/${jobId}/suggestions`, {
+      if (!jobId) {
+        throw new Error('Job ID is missing or invalid');
+      }
+
+      const url = `/api/jobs/${jobId}/suggestions`;
+      console.log(`[applyBulkProperties] Sending PATCH to ${url}`, {
+        jobId,
+        updateCount: updated.length,
+        firstItem: updated[0]
+      });
+
+      const response = await axios.patch(url, {
         suggestions: updated
       });
+
+      console.log('[applyBulkProperties] Response:', response.data);
 
       // Refresh from backend to confirm save
       if (response.data.suggestions) {
@@ -183,7 +195,9 @@ function ManualEditMarkup() {
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
     } catch (err) {
-      console.error('Error saving bulk properties:', err);
+      console.error('[applyBulkProperties] Error:', err);
+      console.error('[applyBulkProperties] Response data:', err.response?.data);
+      console.error('[applyBulkProperties] Status code:', err.response?.status);
       setSaveStatus('error');
       alert('✗ Error saving changes: ' + (err.response?.data?.error || err.message));
       // Revert to previous state on error
@@ -235,10 +249,23 @@ function ManualEditMarkup() {
     setSaveStatus('saving');
 
     try {
-      // Send to backend to persist
-      const response = await axios.patch(`/api/jobs/${jobId}/suggestions`, {
+      if (!jobId) {
+        throw new Error('Job ID is missing or invalid');
+      }
+
+      const url = `/api/jobs/${jobId}/suggestions`;
+      console.log(`[applyBulkSigners] Sending PATCH to ${url}`, {
+        jobId,
+        updateCount: updated.length,
+        signer: bulkSignerValue,
+        firstItem: updated[0]
+      });
+
+      const response = await axios.patch(url, {
         suggestions: updated
       });
+
+      console.log('[applyBulkSigners] Response:', response.data);
 
       // Refresh from backend to confirm save
       if (response.data.suggestions) {
@@ -248,7 +275,9 @@ function ManualEditMarkup() {
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000); // Clear after 2 seconds
     } catch (err) {
-      console.error('Error saving bulk signer:', err);
+      console.error('[applyBulkSigners] Error:', err);
+      console.error('[applyBulkSigners] Response data:', err.response?.data);
+      console.error('[applyBulkSigners] Status code:', err.response?.status);
       setSaveStatus('error');
       alert('✗ Error saving changes: ' + (err.response?.data?.error || err.message));
       // Revert to previous state on error
@@ -398,12 +427,35 @@ function ManualEditMarkup() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Manual Edit Mode</h1>
-          <p className="text-gray-600">Edit current field values and properties for {job?.document_title}</p>
+      {/* Persistent Progress Bar - Shows while job is processing */}
+      {job && job.status === 'analyzing' && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b-2 border-blue-500 shadow-md">
+          <div className="max-w-7xl mx-auto px-8 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                <span className="text-sm font-medium text-blue-700">{progressPhase || 'Processing...'}</span>
+              </div>
+              <span className="text-xs text-gray-600">{progress}% complete</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-blue-600 h-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* Add top padding when progress bar is visible */}
+      <div className={job?.status === 'analyzing' ? 'pt-20' : ''}>
+        <div className="max-w-7xl mx-auto">
+          {/* Header */}
+          <div className="mb-8">
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">Manual Edit Mode</h1>
+            <p className="text-gray-600">Edit current field values and properties for {job?.document_title}</p>
+          </div>
 
         {/* Preview Panel */}
         {selectedPreviewId && (
@@ -786,6 +838,7 @@ function ManualEditMarkup() {
           </button>
         </div>
       </div>
+        </div>
     </div>
   );
 }

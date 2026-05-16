@@ -227,6 +227,8 @@ async function runManualEditJob(jobId, options) {
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Detecting fields...', jobId]);
     let fields = await detectFieldsFromPDF(pdfPath);
     console.log(`[${jobId}] Detected ${fields.length} fields`);
+    // Ensure phase is visible for at least 300ms
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     if (fields.length === 0) {
       throw new Error('No form fields detected in PDF');
@@ -243,6 +245,7 @@ async function runManualEditJob(jobId, options) {
     // Phase 2: Generate suggestions from current values (no OCR, no predictions)
     console.log(`[${jobId}] Phase 2: Generating suggestions from current field values...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating suggestions...', jobId]);
+    await new Promise(resolve => setTimeout(resolve, 200));
     const suggestions = fields.map((field, idx) => {
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
       const displayFieldName = getDisplayFieldName(field.field_name, duplicateInfo);
@@ -265,6 +268,15 @@ async function runManualEditJob(jobId, options) {
 
     console.log(`[${jobId}] Generated ${suggestions.length} suggestions`);
 
+    // Add intermediate progress updates during suggestion generation
+    const suggestionBatchSize = Math.max(1, Math.ceil(suggestions.length / 3));
+    for (let i = 0; i < suggestions.length; i += suggestionBatchSize) {
+      const progress = Math.floor((i / suggestions.length) * 100);
+      const batch = Math.ceil(i / suggestionBatchSize) + 1;
+      await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`,
+        [`Generating suggestions (${Math.min(batch * suggestionBatchSize, suggestions.length)}/${suggestions.length})...`, jobId]);
+    }
+
     // Phase 3: Generate preview images
     console.log(`[${jobId}] Phase 3: Generating field preview images for ${suggestions.length} fields...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating previews...', jobId]);
@@ -273,7 +285,10 @@ async function runManualEditJob(jobId, options) {
 
     for (let i = 0; i < suggestions.length; i += previewBatchSize) {
       const batch = suggestions.slice(i, i + previewBatchSize);
-      console.log(`[${jobId}] Processing preview batch ${Math.floor(i / previewBatchSize) + 1}/${Math.ceil(suggestions.length / previewBatchSize)}`);
+      const batchNum = Math.floor(i / previewBatchSize) + 1;
+      const totalBatches = Math.ceil(suggestions.length / previewBatchSize);
+      console.log(`[${jobId}] Processing preview batch ${batchNum}/${totalBatches}`);
+      await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, [`Generating previews (${batchNum}/${totalBatches})...`, jobId]);
 
       const previewPromises = batch.map(async (suggestion) => {
         try {
@@ -324,6 +339,7 @@ async function runManualEditJob(jobId, options) {
     // Phase 4: Store suggestions in database
     console.log(`[${jobId}] Phase 4: Storing suggestions in database...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Storing data...', jobId]);
+    await new Promise(resolve => setTimeout(resolve, 200));
     for (const suggestion of suggestionsWithPreviews) {
       try {
         await db.run(

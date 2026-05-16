@@ -258,10 +258,15 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
     const { jobId } = req.params;
     const { suggestions: suggestionsToUpdate } = req.body;
 
+    console.log(`[PATCH suggestions] jobId: ${jobId}, updateCount: ${suggestionsToUpdate?.length || 0}`);
+
     const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
     if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
+      console.error(`[PATCH suggestions] Job not found for jobId: ${jobId}`);
+      return res.status(404).json({ error: `Job not found: ${jobId}` });
     }
+
+    console.log(`[PATCH suggestions] Found job, processing ${suggestionsToUpdate?.length || 0} updates`);
 
     if (!suggestionsToUpdate || !Array.isArray(suggestionsToUpdate)) {
       return res.status(400).json({ error: 'Invalid suggestions array' });
@@ -269,29 +274,68 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
 
     // Update each suggestion in the database
     let updatedCount = 0;
+    let errorCount = 0;
+
     for (const suggestion of suggestionsToUpdate) {
-      await db.run(
-        `UPDATE suggestions
-         SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
-         WHERE job_id = ? AND field_name = ?`,
-        [
-          suggestion.field_name,
-          suggestion.signer || null,
-          suggestion.required ? 1 : 0,
-          suggestion.read_only ? 1 : 0,
-          suggestion.field_type,
-          jobId,
-          suggestion.field_name_original || suggestion.field_name
-        ]
-      );
-      updatedCount++;
+      try {
+        // Use suggestion ID if available, fallback to field_name matching
+        const isUsingId = suggestion.id && typeof suggestion.id === 'number';
+
+        if (isUsingId) {
+          // Match by primary key (most reliable)
+          const result = await db.run(
+            `UPDATE suggestions
+             SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
+             WHERE id = ? AND job_id = ?`,
+            [
+              suggestion.field_name,
+              suggestion.signer || null,
+              suggestion.required ? 1 : 0,
+              suggestion.read_only ? 1 : 0,
+              suggestion.field_type,
+              suggestion.id,
+              jobId
+            ]
+          );
+          if (result.changes === 0) {
+            console.warn(`[PATCH suggestions] No rows updated for suggestion id=${suggestion.id}`);
+          }
+        } else {
+          // Fallback: match by field name (for backwards compatibility)
+          const result = await db.run(
+            `UPDATE suggestions
+             SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
+             WHERE job_id = ? AND field_name = ?`,
+            [
+              suggestion.field_name,
+              suggestion.signer || null,
+              suggestion.required ? 1 : 0,
+              suggestion.read_only ? 1 : 0,
+              suggestion.field_type,
+              jobId,
+              suggestion.field_name_original || suggestion.field_name
+            ]
+          );
+          if (result.changes === 0) {
+            console.warn(`[PATCH suggestions] No rows updated for field_name="${suggestion.field_name}"`);
+          }
+        }
+        updatedCount++;
+      } catch (updateErr) {
+        console.error(`[PATCH suggestions] Error updating suggestion:`, updateErr.message);
+        errorCount++;
+      }
     }
+
+    console.log(`[PATCH suggestions] Update complete: ${updatedCount} updated, ${errorCount} errors`);
 
     // Fetch updated suggestions to return
     const updatedSuggestions = await db.all(
       'SELECT * FROM suggestions WHERE job_id = ? ORDER BY field_page, id',
       [jobId]
     );
+
+    console.log(`[PATCH suggestions] Returning ${updatedSuggestions.length} suggestions`);
 
     res.json({
       jobId,
@@ -301,6 +345,7 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
     });
 
   } catch (err) {
+    console.error(`[PATCH suggestions] Exception:`, err.message);
     next(err);
   }
 });

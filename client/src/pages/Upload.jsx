@@ -207,128 +207,136 @@ function Upload() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                OCR Search Radius (pixels)
-              </label>
-              <input
-                type="number"
-                value={ocrRadius}
-                onChange={(e) => setOcrRadius(parseInt(e.target.value))}
-                min="50"
-                max="200"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
-                style={{
-                  '--tw-ring-color': '#FF9800'
-                }}
-                onFocus={(e) => e.target.style.borderColor = '#FF9800'}
-                onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
-                disabled={loading}
-              />
-              <p className="text-gray-500 text-xs mt-1">
-                How far to search for text near each field (default: 100px)
-              </p>
-            </div>
+            {/* OCR Search Radius - Only for Auto Edit */}
+            {workflowType === 'auto_edit' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  OCR Search Radius (pixels)
+                </label>
+                <input
+                  type="number"
+                  value={ocrRadius}
+                  onChange={(e) => setOcrRadius(parseInt(e.target.value))}
+                  min="50"
+                  max="200"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2"
+                  style={{
+                    '--tw-ring-color': '#FF9800'
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = '#FF9800'}
+                  onBlur={(e) => e.target.style.borderColor = '#D0D0D0'}
+                  disabled={loading}
+                />
+                <p className="text-gray-500 text-xs mt-1">
+                  How far to search for text near each field (default: 100px)
+                </p>
+              </div>
+            )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                ALIS Field Suggestions
-              </label>
-              <div className="flex gap-2">
-                {['off', 'low', 'high'].map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => setAlisAggressiveness(level)}
-                    disabled={loading}
-                    className="flex-1 px-4 py-2 rounded-lg font-medium transition disabled:cursor-not-allowed"
-                    style={{
-                      backgroundColor: alisAggressiveness === level ? '#FF9800' : '#E8E8E8',
-                      color: alisAggressiveness === level ? 'white' : '#666',
-                      opacity: loading ? 0.6 : 1
-                    }}
-                    onMouseEnter={(e) => !loading && alisAggressiveness !== level && (e.target.style.backgroundColor = '#F0F0F0')}
-                    onMouseLeave={(e) => !loading && (e.target.style.backgroundColor = alisAggressiveness === level ? '#FF9800' : '#E8E8E8')}
+            {/* ALIS Field Suggestions - Only for Auto Edit */}
+            {workflowType === 'auto_edit' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  ALIS Field Suggestions
+                </label>
+                <div className="flex gap-2">
+                  {['off', 'low', 'high'].map((level) => (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => setAlisAggressiveness(level)}
+                      disabled={loading}
+                      className="flex-1 px-4 py-2 rounded-lg font-medium transition disabled:cursor-not-allowed"
+                      style={{
+                        backgroundColor: alisAggressiveness === level ? '#FF9800' : '#E8E8E8',
+                        color: alisAggressiveness === level ? 'white' : '#666',
+                        opacity: loading ? 0.6 : 1
+                      }}
+                      onMouseEnter={(e) => !loading && alisAggressiveness !== level && (e.target.style.backgroundColor = '#F0F0F0')}
+                      onMouseLeave={(e) => !loading && (e.target.style.backgroundColor = alisAggressiveness === level ? '#FF9800' : '#E8E8E8')}
+                    >
+                      {level === 'off' && 'Off'}
+                      {level === 'low' && 'Static Fields'}
+                      {level === 'high' && 'Aggressive Match'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-gray-500 text-xs mt-2">
+                  {alisAggressiveness === 'off' && 'Standard field suggestions only.'}
+                  {alisAggressiveness === 'low' && 'Suggest common ALIS fields (name, DOB, etc.).'}
+                  {alisAggressiveness === 'high' && 'Aggressively match OCR text with ALIS field descriptors.'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Signers Configuration - Only for Auto Edit */}
+          {workflowType === 'auto_edit' && (
+            <div className="mb-6 p-4 rounded-lg" style={{
+              backgroundColor: '#FFF3E0',
+              border: '1px solid #FFE0B2'
+            }}>
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">
+                Configure Signers/Anchors
+              </h3>
+              <p className="text-xs text-gray-600 mb-4">
+                Define who will sign this document. The system will predict which fields belong to each signer during analysis.
+              </p>
+
+              {/* Signer List */}
+              <div className="space-y-2 mb-4">
+                {signers.map((signer) => (
+                  <div
+                    key={signer.id}
+                    className="flex items-center justify-between bg-white p-3 rounded border border-gray-200"
                   >
-                    {level === 'off' && 'Off'}
-                    {level === 'low' && 'Static Fields'}
-                    {level === 'high' && 'Aggressive Match'}
-                  </button>
+                    <span className="text-sm font-medium text-gray-700">{signer.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeSigner(signer.id)}
+                      disabled={signers.length === 1}
+                      className="transition disabled:cursor-not-allowed"
+                      style={{
+                        color: signers.length === 1 ? '#CCC' : '#FF5722'
+                      }}
+                      onMouseEnter={(e) => signers.length > 1 && (e.target.style.opacity = '0.7')}
+                      onMouseLeave={(e) => e.target.style.opacity = '1'}
+                      title="Remove signer"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
                 ))}
               </div>
-              <p className="text-gray-500 text-xs mt-2">
-                {alisAggressiveness === 'off' && 'Standard field suggestions only.'}
-                {alisAggressiveness === 'low' && 'Suggest common ALIS fields (name, DOB, etc.).'}
-                {alisAggressiveness === 'high' && 'Aggressively match OCR text with ALIS field descriptors.'}
-              </p>
-            </div>
-          </div>
 
-          {/* Signers Configuration */}
-          <div className="mb-6 p-4 rounded-lg" style={{
-            backgroundColor: '#FFF3E0',
-            border: '1px solid #FFE0B2'
-          }}>
-            <h3 className="text-sm font-semibold text-gray-900 mb-3">
-              Configure Signers/Anchors
-            </h3>
-            <p className="text-xs text-gray-600 mb-4">
-              Define who will sign this document. The system will predict which fields belong to each signer during analysis.
-            </p>
-
-            {/* Signer List */}
-            <div className="space-y-2 mb-4">
-              {signers.map((signer) => (
-                <div
-                  key={signer.id}
-                  className="flex items-center justify-between bg-white p-3 rounded border border-gray-200"
+              {/* Add Signer */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newSignerName}
+                  onChange={(e) => setNewSignerName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && addSigner()}
+                  placeholder="e.g., Manager, Witness, Administrator"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  disabled={loading}
+                />
+                <button
+                  type="button"
+                  onClick={addSigner}
+                  disabled={!newSignerName.trim() || loading}
+                  className="px-3 py-2 text-white rounded disabled:cursor-not-allowed transition flex items-center gap-1 text-sm"
+                  style={{
+                    backgroundColor: !newSignerName.trim() || loading ? '#CCC' : '#FF9800'
+                  }}
+                  onMouseEnter={(e) => !newSignerName.trim() || loading || (e.target.style.backgroundColor = '#E68900')}
+                  onMouseLeave={(e) => e.target.style.backgroundColor = '#FF9800'}
                 >
-                  <span className="text-sm font-medium text-gray-700">{signer.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeSigner(signer.id)}
-                    disabled={signers.length === 1}
-                    className="transition disabled:cursor-not-allowed"
-                    style={{
-                      color: signers.length === 1 ? '#CCC' : '#FF5722'
-                    }}
-                    onMouseEnter={(e) => signers.length > 1 && (e.target.style.opacity = '0.7')}
-                    onMouseLeave={(e) => e.target.style.opacity = '1'}
-                    title="Remove signer"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-              ))}
+                  <Plus size={16} />
+                  Add
+                </button>
+              </div>
             </div>
-
-            {/* Add Signer */}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newSignerName}
-                onChange={(e) => setNewSignerName(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && addSigner()}
-                placeholder="e.g., Manager, Witness, Administrator"
-                className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={loading}
-              />
-              <button
-                type="button"
-                onClick={addSigner}
-                disabled={!newSignerName.trim() || loading}
-                className="px-3 py-2 text-white rounded disabled:cursor-not-allowed transition flex items-center gap-1 text-sm"
-                style={{
-                  backgroundColor: !newSignerName.trim() || loading ? '#CCC' : '#FF9800'
-                }}
-                onMouseEnter={(e) => !newSignerName.trim() || loading || (e.target.style.backgroundColor = '#E68900')}
-                onMouseLeave={(e) => e.target.style.backgroundColor = '#FF9800'}
-              >
-                <Plus size={16} />
-                Add
-              </button>
-            </div>
-          </div>
+          )}
 
           {/* Submit Button */}
           <button

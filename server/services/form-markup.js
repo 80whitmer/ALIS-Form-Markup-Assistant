@@ -265,6 +265,8 @@ async function runFormMarkupJob(jobId, options) {
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Detecting fields...', jobId]);
     let fields = await detectFieldsFromPDF(pdfPath);
     console.log(`[${jobId}] Detected ${fields.length} fields`);
+    // Ensure phase is visible for at least 300ms
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     if (fields.length === 0) {
       throw new Error('No form fields detected in PDF');
@@ -310,6 +312,7 @@ async function runFormMarkupJob(jobId, options) {
     // Phase 2: Generate basic suggestions
     console.log(`[${jobId}] Phase 2: Generating suggestions...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating suggestions...', jobId]);
+    await new Promise(resolve => setTimeout(resolve, 200));
     const suggestions = fields.map((field, idx) => {
       // Normalize field type: button -> check (buttons are checkboxes)
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
@@ -372,12 +375,16 @@ async function runFormMarkupJob(jobId, options) {
     // Phase 3b: Generate preview images (with concurrency limit)
     console.log(`[${jobId}] Phase 3b: Generating field preview images for ${suggestionsWithAlis.length} fields...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating previews...', jobId]);
+    await new Promise(resolve => setTimeout(resolve, 200));
     const suggestionsWithPreviews = [];
     const previewBatchSize = 3;
 
     for (let i = 0; i < suggestionsWithAlis.length; i += previewBatchSize) {
       const batch = suggestionsWithAlis.slice(i, i + previewBatchSize);
-      console.log(`[${jobId}] Processing preview batch ${Math.floor(i / previewBatchSize) + 1}/${Math.ceil(suggestionsWithAlis.length / previewBatchSize)}`);
+      const batchNum = Math.floor(i / previewBatchSize) + 1;
+      const totalBatches = Math.ceil(suggestionsWithAlis.length / previewBatchSize);
+      console.log(`[${jobId}] Processing preview batch ${batchNum}/${totalBatches}`);
+      await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, [`Generating previews (${batchNum}/${totalBatches})...`, jobId]);
 
       const previewPromises = batch.map(async (suggestion, batchIdx) => {
         try {
@@ -428,6 +435,7 @@ async function runFormMarkupJob(jobId, options) {
     // Phase 3c: Store suggestions in database
     console.log(`[${jobId}] Phase 3c: Storing suggestions in database...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Storing data...', jobId]);
+    await new Promise(resolve => setTimeout(resolve, 200));
     for (const suggestion of suggestionsWithPreviews) {
       const anchorName = generateAnchor(suggestion.field_name, suggestion.field_type, suggestion.field_page, suggestion.signer);
 
