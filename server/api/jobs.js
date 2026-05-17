@@ -283,38 +283,101 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
 
         if (isUsingId) {
           // Match by primary key (most reliable)
+          // Build dynamic update based on provided fields
+          const updateFields = [];
+          const updateValues = [];
+
+          if (suggestion.field_name !== undefined) {
+            updateFields.push('field_name = ?');
+            updateValues.push(suggestion.field_name);
+          }
+          if (suggestion.signer !== undefined) {
+            updateFields.push('signer = ?');
+            updateValues.push(suggestion.signer || null);
+          }
+          if (suggestion.required !== undefined) {
+            updateFields.push('required = ?');
+            updateValues.push(suggestion.required ? 1 : 0);
+          }
+          if (suggestion.read_only !== undefined) {
+            updateFields.push('read_only = ?');
+            updateValues.push(suggestion.read_only ? 1 : 0);
+          }
+          if (suggestion.border !== undefined) {
+            updateFields.push('border = ?');
+            updateValues.push(suggestion.border ? 1 : 0);
+          }
+          if (suggestion.field_type !== undefined) {
+            updateFields.push('field_type = ?');
+            updateValues.push(suggestion.field_type);
+          }
+          if (suggestion.approval_status !== undefined) {
+            updateFields.push('approval_status = ?');
+            updateValues.push(suggestion.approval_status);
+          }
+
+          if (updateFields.length === 0) {
+            console.warn(`[PATCH suggestions] No fields to update for suggestion id=${suggestion.id}`);
+            continue;
+          }
+
+          updateValues.push(suggestion.id, jobId);
+
           const result = await db.run(
             `UPDATE suggestions
-             SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
+             SET ${updateFields.join(', ')}
              WHERE id = ? AND job_id = ?`,
-            [
-              suggestion.field_name,
-              suggestion.signer || null,
-              suggestion.required ? 1 : 0,
-              suggestion.read_only ? 1 : 0,
-              suggestion.field_type,
-              suggestion.id,
-              jobId
-            ]
+            updateValues
           );
           if (result.changes === 0) {
             console.warn(`[PATCH suggestions] No rows updated for suggestion id=${suggestion.id}`);
           }
         } else {
           // Fallback: match by field name (for backwards compatibility)
+          const updateFields = [];
+          const updateValues = [];
+
+          if (suggestion.field_name !== undefined) {
+            updateFields.push('field_name = ?');
+            updateValues.push(suggestion.field_name);
+          }
+          if (suggestion.signer !== undefined) {
+            updateFields.push('signer = ?');
+            updateValues.push(suggestion.signer || null);
+          }
+          if (suggestion.required !== undefined) {
+            updateFields.push('required = ?');
+            updateValues.push(suggestion.required ? 1 : 0);
+          }
+          if (suggestion.read_only !== undefined) {
+            updateFields.push('read_only = ?');
+            updateValues.push(suggestion.read_only ? 1 : 0);
+          }
+          if (suggestion.border !== undefined) {
+            updateFields.push('border = ?');
+            updateValues.push(suggestion.border ? 1 : 0);
+          }
+          if (suggestion.field_type !== undefined) {
+            updateFields.push('field_type = ?');
+            updateValues.push(suggestion.field_type);
+          }
+          if (suggestion.approval_status !== undefined) {
+            updateFields.push('approval_status = ?');
+            updateValues.push(suggestion.approval_status);
+          }
+
+          if (updateFields.length === 0) {
+            console.warn(`[PATCH suggestions] No fields to update for field_name="${suggestion.field_name}"`);
+            continue;
+          }
+
+          updateValues.push(jobId, suggestion.field_name_original || suggestion.field_name);
+
           const result = await db.run(
             `UPDATE suggestions
-             SET field_name = ?, signer = ?, required = ?, read_only = ?, field_type = ?
+             SET ${updateFields.join(', ')}
              WHERE job_id = ? AND field_name = ?`,
-            [
-              suggestion.field_name,
-              suggestion.signer || null,
-              suggestion.required ? 1 : 0,
-              suggestion.read_only ? 1 : 0,
-              suggestion.field_type,
-              jobId,
-              suggestion.field_name_original || suggestion.field_name
-            ]
+            updateValues
           );
           if (result.changes === 0) {
             console.warn(`[PATCH suggestions] No rows updated for field_name="${suggestion.field_name}"`);
@@ -365,8 +428,59 @@ router.post('/:jobId/apply', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid suggestions array' });
     }
 
-    // TODO: Implement property-applier to modify PDF
-    // For now, return a placeholder response
+    // STEP 1: Save all edited suggestions to the database before applying
+    console.log(`[POST apply] Saving ${editedSuggestions.length} edited suggestions to database...`);
+    for (const suggestion of editedSuggestions) {
+      try {
+        if (suggestion.id && typeof suggestion.id === 'number') {
+          const updateFields = [];
+          const updateValues = [];
+
+          if (suggestion.field_name !== undefined) {
+            updateFields.push('field_name = ?');
+            updateValues.push(suggestion.field_name);
+          }
+          if (suggestion.signer !== undefined) {
+            updateFields.push('signer = ?');
+            updateValues.push(suggestion.signer || null);
+          }
+          if (suggestion.required !== undefined) {
+            updateFields.push('required = ?');
+            updateValues.push(suggestion.required ? 1 : 0);
+          }
+          if (suggestion.read_only !== undefined) {
+            updateFields.push('read_only = ?');
+            updateValues.push(suggestion.read_only ? 1 : 0);
+          }
+          if (suggestion.border !== undefined) {
+            updateFields.push('border = ?');
+            updateValues.push(suggestion.border ? 1 : 0);
+          }
+          if (suggestion.field_type !== undefined) {
+            updateFields.push('field_type = ?');
+            updateValues.push(suggestion.field_type);
+          }
+          if (suggestion.approval_status !== undefined) {
+            updateFields.push('approval_status = ?');
+            updateValues.push(suggestion.approval_status);
+          }
+
+          if (updateFields.length > 0) {
+            updateValues.push(suggestion.id, jobId);
+            await db.run(
+              `UPDATE suggestions SET ${updateFields.join(', ')} WHERE id = ? AND job_id = ?`,
+              updateValues
+            );
+          }
+        }
+      } catch (updateErr) {
+        console.error(`[POST apply] Error saving suggestion id=${suggestion.id}:`, updateErr.message);
+      }
+    }
+    console.log(`[POST apply] Suggestions saved to database`);
+
+    // STEP 2: Apply the changes to the PDF
+    console.log(`[POST apply] Applying changes to PDF...`);
     const { applyChangesToPDF } = require('../services/property-applier');
 
     const inputPath = path.join(__dirname, '../jobs', jobId, 'input.pdf');
