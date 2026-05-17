@@ -419,6 +419,13 @@ router.post('/:jobId/apply', async (req, res, next) => {
     const { jobId } = req.params;
     const { suggestions: editedSuggestions } = req.body;
 
+    console.log(`[POST apply] ========== START APPLY ==========`);
+    console.log(`[POST apply] Job ID: ${jobId}`);
+    console.log(`[POST apply] Received ${editedSuggestions?.length || 0} suggestions`);
+    if (editedSuggestions && editedSuggestions.length > 0) {
+      console.log(`[POST apply] First suggestion sample:`, JSON.stringify(editedSuggestions[0], null, 2));
+    }
+
     const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
@@ -430,65 +437,87 @@ router.post('/:jobId/apply', async (req, res, next) => {
 
     // STEP 1: Save all edited suggestions to the database before applying
     console.log(`[POST apply] Saving ${editedSuggestions.length} edited suggestions to database...`);
+    let savedCount = 0;
+    let skippedCount = 0;
+
     for (const suggestion of editedSuggestions) {
       try {
-        if (suggestion.id && typeof suggestion.id === 'number') {
-          const updateFields = [];
-          const updateValues = [];
+        if (!suggestion.id) {
+          console.warn(`[POST apply] ⚠️ SKIPPED: Suggestion has no ID. Field: ${suggestion.field_name}`);
+          skippedCount++;
+          continue;
+        }
 
-          if (suggestion.field_name !== undefined) {
-            updateFields.push('field_name = ?');
-            updateValues.push(suggestion.field_name);
-          }
-          if (suggestion.signer !== undefined) {
-            updateFields.push('signer = ?');
-            updateValues.push(suggestion.signer || null);
-          }
-          if (suggestion.required !== undefined) {
-            updateFields.push('required = ?');
-            updateValues.push(suggestion.required ? 1 : 0);
-          }
-          if (suggestion.read_only !== undefined) {
-            updateFields.push('read_only = ?');
-            updateValues.push(suggestion.read_only ? 1 : 0);
-          }
-          if (suggestion.border !== undefined) {
-            updateFields.push('border = ?');
-            updateValues.push(suggestion.border ? 1 : 0);
-          }
-          if (suggestion.field_type !== undefined) {
-            updateFields.push('field_type = ?');
-            updateValues.push(suggestion.field_type);
-          }
-          if (suggestion.approval_status !== undefined) {
-            updateFields.push('approval_status = ?');
-            updateValues.push(suggestion.approval_status);
-          }
+        if (typeof suggestion.id !== 'number') {
+          console.warn(`[POST apply] ⚠️ SKIPPED: Suggestion ID is not a number. ID=${suggestion.id}, Type=${typeof suggestion.id}, Field: ${suggestion.field_name}`);
+          skippedCount++;
+          continue;
+        }
 
-          if (updateFields.length > 0) {
-            updateValues.push(suggestion.id, jobId);
-            await db.run(
-              `UPDATE suggestions SET ${updateFields.join(', ')} WHERE id = ? AND job_id = ?`,
-              updateValues
-            );
-          }
+        const updateFields = [];
+        const updateValues = [];
+
+        if (suggestion.field_name !== undefined) {
+          updateFields.push('field_name = ?');
+          updateValues.push(suggestion.field_name);
+        }
+        if (suggestion.signer !== undefined) {
+          updateFields.push('signer = ?');
+          updateValues.push(suggestion.signer || null);
+        }
+        if (suggestion.required !== undefined) {
+          updateFields.push('required = ?');
+          updateValues.push(suggestion.required ? 1 : 0);
+        }
+        if (suggestion.read_only !== undefined) {
+          updateFields.push('read_only = ?');
+          updateValues.push(suggestion.read_only ? 1 : 0);
+        }
+        if (suggestion.border !== undefined) {
+          updateFields.push('border = ?');
+          updateValues.push(suggestion.border ? 1 : 0);
+        }
+        if (suggestion.field_type !== undefined) {
+          updateFields.push('field_type = ?');
+          updateValues.push(suggestion.field_type);
+        }
+        if (suggestion.approval_status !== undefined) {
+          updateFields.push('approval_status = ?');
+          updateValues.push(suggestion.approval_status);
+        }
+
+        if (updateFields.length > 0) {
+          updateValues.push(suggestion.id, jobId);
+          const query = `UPDATE suggestions SET ${updateFields.join(', ')} WHERE id = ? AND job_id = ?`;
+          console.log(`[POST apply] Executing update for suggestion ID ${suggestion.id}: ${updateFields.join(', ')}`);
+          await db.run(query, updateValues);
+          console.log(`[POST apply] ✓ Updated suggestion ID ${suggestion.id} (${suggestion.field_name})`);
+          savedCount++;
+        } else {
+          console.log(`[POST apply] ⚠️ No update fields for suggestion ID ${suggestion.id}`);
         }
       } catch (updateErr) {
-        console.error(`[POST apply] Error saving suggestion id=${suggestion.id}:`, updateErr.message);
+        console.error(`[POST apply] ✗ Error saving suggestion id=${suggestion.id}:`, updateErr.message);
       }
     }
-    console.log(`[POST apply] Suggestions saved to database`);
+    console.log(`[POST apply] Database save complete: ${savedCount} saved, ${skippedCount} skipped`);
 
     // STEP 2: Apply the changes to the PDF
-    console.log(`[POST apply] Applying changes to PDF...`);
+    console.log(`[POST apply] STEP 2: Applying changes to PDF...`);
     const { applyChangesToPDF } = require('../services/property-applier');
 
     const inputPath = path.join(__dirname, '../jobs', jobId, 'input.pdf');
     const outputPath = path.join(__dirname, '../jobs', jobId, 'output.pdf');
 
+    console.log(`[POST apply] Input PDF: ${inputPath}`);
+    console.log(`[POST apply] Output PDF: ${outputPath}`);
+    console.log(`[POST apply] Calling applyChangesToPDF with ${editedSuggestions.length} suggestions...`);
+
     const result = await applyChangesToPDF(inputPath, editedSuggestions, outputPath);
+    console.log(`[POST apply] ✓ applyChangesToPDF result:`, result);
 
     // Archive both PDFs
+    console.log(`[POST apply] STEP 3: Archiving PDFs...`);
     const archiveDir = path.join(
       __dirname,
       '../archived',
@@ -496,6 +525,7 @@ router.post('/:jobId/apply', async (req, res, next) => {
       new Date().toISOString().split('T')[0]
     );
     fs.mkdirSync(archiveDir, { recursive: true });
+    console.log(`[POST apply] Archive directory: ${archiveDir}`);
 
     const docName = job.document_title.replace(/[^a-z0-9]/gi, '_');
     const originalArchivePath = path.join(archiveDir, `original-${docName}.pdf`);
@@ -503,6 +533,7 @@ router.post('/:jobId/apply', async (req, res, next) => {
 
     fs.copyFileSync(inputPath, originalArchivePath);
     fs.copyFileSync(outputPath, appliedArchivePath);
+    console.log(`[POST apply] ✓ PDFs archived`);
 
     // Record versions
     await db.run(
@@ -516,16 +547,21 @@ router.post('/:jobId/apply', async (req, res, next) => {
        VALUES (?, ?, ?, ?, ?)`,
       [jobId, 'applied', appliedArchivePath, editedSuggestions.length, editedSuggestions.filter(s => s.approval_status === 'approved').length]
     );
+    console.log(`[POST apply] ✓ Job versions recorded`);
 
     // Update job status
     await db.run(
       `UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?`,
       ['applied', new Date().toISOString(), jobId]
     );
+    console.log(`[POST apply] ✓ Job status updated to 'applied'`);
 
     // Return modified PDF as base64
+    console.log(`[POST apply] STEP 4: Preparing PDF for download...`);
     const outputBuffer = fs.readFileSync(outputPath);
     const pdfBase64 = outputBuffer.toString('base64');
+    console.log(`[POST apply] ✓ PDF converted to base64 (${(outputBuffer.length / 1024).toFixed(1)} KB)`);
+    console.log(`[POST apply] ========== APPLY COMPLETE ==========`);
 
     res.json({
       jobId,
@@ -538,6 +574,9 @@ router.post('/:jobId/apply', async (req, res, next) => {
     });
 
   } catch (err) {
+    console.error(`[POST apply] ✗ FATAL ERROR:`, err.message);
+    console.error(`[POST apply] Stack:`, err.stack);
+    console.error(`[POST apply] ========== APPLY FAILED ==========`);
     next(err);
   }
 });

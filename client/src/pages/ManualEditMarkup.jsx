@@ -41,6 +41,27 @@ function ManualEditMarkup() {
   const [progressPhase, setProgressPhase] = useState(''); // Show what phase we're in
   const [selectedPreviewId, setSelectedPreviewId] = useState(null);
   const [hasLocalEdits, setHasLocalEdits] = useState(false); // Track if there are unsaved local edits
+  const [loadingStartTime, setLoadingStartTime] = useState(null); // Track when loading started
+  const [shouldShowContent, setShouldShowContent] = useState(false); // Control min display time
+  const [duplicateFieldNames, setDuplicateFieldNames] = useState(new Set()); // Track duplicate field names
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false); // Filter for duplicates only
+  const [pdfStyleAnchors, setPdfStyleAnchors] = useState(new Set()); // Track PDF-style (invalid) anchors
+  const [showPdfStyleOnly, setShowPdfStyleOnly] = useState(false); // Filter for PDF-style anchors only
+
+  // Regex to validate ALIS-standard signers: lowercase letters, underscores, hyphens only
+  const isValidAlisAnchor = (anchor) => {
+    if (!anchor) return false;
+    // Valid ALIS signers: lowercase letters, underscores, hyphens
+    return /^[a-z_\-]+$/.test(anchor);
+  };
+
+  // Initialize loading start time
+  useEffect(() => {
+    if (loading && !loadingStartTime) {
+      setLoadingStartTime(Date.now());
+      setShouldShowContent(false);
+    }
+  }, [loading, loadingStartTime]);
 
   // Poll progress while loading
   useEffect(() => {
@@ -80,31 +101,118 @@ function ManualEditMarkup() {
     try {
       const response = await axios.get(`/api/jobs/${jobId}`);
       setJob(response.data.job);
-      setSuggestions(response.data.suggestions || []);
+      const sugg = response.data.suggestions || [];
+
+      // Auto-populate signer field based on field name anchor
+      // Extract and validate signers from field names (separates valid from PDF-style)
+      const jobSigners = response.data.job?.signers ? JSON.parse(response.data.job.signers) : [];
+      const extractedValidSigners = extractSignersFromFieldNames(sugg); // This also sets pdfStyleAnchors
+      const allAvailableSigners = new Set([...jobSigners, ...extractedValidSigners]);
+
+      const suggestionsWithAutoSigner = sugg.map(s => {
+        // If signer is already set, don't override it
+        if (s.signer) {
+          return s;
+        }
+
+        // Extract anchor from field name (first part before dot or bracket)
+        const anchor = (s.field_name || '').match(/^([^.\[]+)/)?.[1];
+
+        if (!anchor) {
+          return s;
+        }
+
+        // Try to find a matching signer (case-insensitive)
+        const matchingSigner = Array.from(allAvailableSigners).find(
+          signer => signer.toLowerCase() === anchor.toLowerCase()
+        );
+
+        if (matchingSigner) {
+          return { ...s, signer: matchingSigner.toLowerCase() };
+        }
+
+        // No match found, leave signer as is (empty/null)
+        return s;
+      });
+
+      setSuggestions(suggestionsWithAutoSigner);
 
       // Extract signers/anchors from field names
-      const extracted = extractSignersFromFieldNames(response.data.suggestions || []);
+      const extracted = extractSignersFromFieldNames(suggestionsWithAutoSigner);
       setExtractedSigners(extracted);
 
-      setLoading(false);
+      // Detect duplicate field names
+      const fieldNameCounts = {};
+      suggestionsWithAutoSigner.forEach(s => {
+        fieldNameCounts[s.field_name] = (fieldNameCounts[s.field_name] || 0) + 1;
+      });
+      const duplicates = new Set(
+        Object.entries(fieldNameCounts)
+          .filter(([_, count]) => count > 1)
+          .map(([name, _]) => name)
+      );
+      setDuplicateFieldNames(duplicates);
+
+      // Smoothly complete the progress bar (start at 92% and animate to 100%)
+      setProgress(92);
+      const progressInterval = setInterval(() => {
+        setProgress(prev => {
+          const next = prev + Math.random() * 6; // Random increment up to 6%
+          return next >= 99 ? 100 : next;
+        });
+      }, 150);
+
+      // Only transition when data is actually ready
+      // Enforce minimum display time while loading to show animation
+      const elapsedTime = loadingStartTime ? Date.now() - loadingStartTime : 0;
+      const minDisplayTime = 2000; // 2 second minimum to show loading animation
+      const remainingTime = Math.max(0, minDisplayTime - elapsedTime);
+
+      const completeTransition = () => {
+        clearInterval(progressInterval);
+        setProgress(100);
+        setLoading(false);
+        setShouldShowContent(true);
+      };
+
+      if (remainingTime > 0) {
+        setTimeout(completeTransition, remainingTime);
+      } else {
+        completeTransition();
+      }
     } catch (err) {
+      console.error('[fetchJobDetails] Error:', err.message);
       setError(err.message);
+      setProgress(100);
       setLoading(false);
+      setShouldShowContent(true); // Show content even on error
     }
   };
 
-  // Extract anchors from field names (first part before dot)
+  // Extract anchors from field names, separating valid ALIS anchors from PDF-style ones
   const extractSignersFromFieldNames = (suggestions) => {
-    const signers = new Set();
+    const validSigners = new Set();
+    const pdfStyleSigners = new Set();
+
     suggestions.forEach(s => {
       const fieldName = s.field_name || '';
-      // Extract the anchor (part before first dot)
+      // Extract the anchor (part before first dot or bracket)
       const match = fieldName.match(/^([^.\[]+)/);
       if (match && match[1]) {
-        signers.add(match[1]);
+        const anchor = match[1];
+        // Check if anchor conforms to ALIS standards
+        if (isValidAlisAnchor(anchor)) {
+          validSigners.add(anchor.toLowerCase());
+        } else {
+          pdfStyleSigners.add(anchor);
+        }
       }
     });
-    return Array.from(signers).sort();
+
+    // Update state with PDF-style anchors for highlighting
+    setPdfStyleAnchors(pdfStyleSigners);
+
+    return Array.from(validSigners).sort();
   };
 
   // Create new signer
@@ -125,6 +233,20 @@ function ManualEditMarkup() {
       newExpanded.add(fieldName);
     }
     setExpandedRows(newExpanded);
+  };
+
+  const expandAllPreviews = () => {
+    // Expand all rows that have preview images
+    const allPreviewRows = new Set(
+      filteredSuggestions
+        .filter(s => s.preview_image)
+        .map(s => s.field_name)
+    );
+    setExpandedRows(allPreviewRows);
+  };
+
+  const collapseAllPreviews = () => {
+    setExpandedRows(new Set());
   };
 
   const handleSelectField = (fieldName) => {
@@ -212,14 +334,79 @@ function ManualEditMarkup() {
     }
   };
 
-  const updateFieldNameAnchor = (fieldName, newAnchor) => {
-    // Extract the anchor and type from field name (e.g., "resident.text.1" -> "text.1")
-    const match = fieldName.match(/^([^.]+)(\..*)/);
-    if (match && match[2]) {
-      // Replace the anchor with the new one, keeping type and instance
-      return `${newAnchor}${match[2]}`;
+  const getNextInstanceNumber = (typeStr, newAnchor, allSuggestions) => {
+    // Find all field names matching {newAnchor}.{typeStr}.*
+    // Extract the highest instance number and return next number
+    const escapedType = typeStr.replace(/\./g, '\\.');
+    const pattern = new RegExp(`^${newAnchor}\\.${escapedType}\\.(\\d+)$`, 'i');
+
+    const existingNumbers = allSuggestions
+      .map(s => {
+        const match = s.field_name?.match(pattern);
+        return match ? parseInt(match[1], 10) : null;
+      })
+      .filter(n => n !== null);
+
+    return existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
+  };
+
+  const deriveTypeFromPdfFieldName = (pdfFieldName) => {
+    // Extract a simple type from PDF field names
+    // CheckBox → check, TextField → text, RadioButton → radio, etc.
+    const match = pdfFieldName.match(/^([a-zA-Z]+)(\d+)$/);
+    if (!match) return null;
+
+    const rawType = match[1].toLowerCase();
+
+    // Map common PDF field type prefixes to ALIS types
+    if (rawType.includes('check')) return 'check';
+    if (rawType.includes('radio')) return 'radio';
+    if (rawType.includes('text')) return 'text';
+    if (rawType.includes('signature')) return 'signature';
+    if (rawType.includes('button')) return 'button';
+    if (rawType.includes('image')) return 'image';
+
+    // Default: use first few characters as type
+    return rawType.substring(0, 4);
+  };
+
+  const updateFieldNameWithNextInstance = (fieldName, newAnchor, allSuggestions) => {
+    // For standard ALIS format: anchor.type1.type2...typeN.instance
+    // Extract type and find next available instance number
+    const parts = fieldName.split('.');
+
+    // Check if it's in standard format with instance number at the end
+    if (parts.length >= 3 && /^\d+$/.test(parts[parts.length - 1])) {
+      // Standard format: extract type (everything between anchor and instance)
+      const typeStr = parts.slice(1, -1).join('.'); // e.g., "text" or "image.border"
+      const nextNumber = getNextInstanceNumber(typeStr, newAnchor, allSuggestions);
+      const result = `${newAnchor}.${typeStr}.${nextNumber}`;
+      console.log(`[updateFieldNameWithNextInstance] ${fieldName} → ${result} (type=${typeStr}, nextNum=${nextNumber})`);
+      return result;
     }
-    return fieldName;
+
+    // Try to derive type from pure PDF field names first (e.g., CheckBox14 → check)
+    const derivedType = deriveTypeFromPdfFieldName(fieldName);
+    if (derivedType) {
+      const nextNumber = getNextInstanceNumber(derivedType, newAnchor, allSuggestions);
+      const result = `${newAnchor}.${derivedType}.${nextNumber}`;
+      console.log(`[updateFieldNameWithNextInstance] ${fieldName} → ${result} (PDF derived type=${derivedType}, nextNum=${nextNumber})`);
+      return result;
+    }
+
+    // If field_name is just an anchor (like "resident" or "staff"), it needs a type
+    // This shouldn't happen - it indicates a previous transformation issue
+    if (parts.length === 1) {
+      console.log(`[updateFieldNameWithNextInstance] Field name has no type: ${fieldName} - needs manual type specification`);
+      // Return as-is to avoid creating resident.resident.X patterns
+      return fieldName;
+    }
+
+    // Fallback: just use the field name as the type
+    const nextNumber = getNextInstanceNumber(fieldName.toLowerCase(), newAnchor, allSuggestions);
+    const result = `${newAnchor}.${fieldName.toLowerCase()}.${nextNumber}`;
+    console.log(`[updateFieldNameWithNextInstance] ${fieldName} → ${result} (fallback, using fieldname as type, nextNum=${nextNumber})`);
+    return result;
   };
 
   const applyBulkSigner = async () => {
@@ -228,54 +415,36 @@ function ManualEditMarkup() {
       return;
     }
 
-    // Build updated array with proper instance number reassignment
-    let updated = [];
-    const nextInstanceMap = {}; // Track next instance number for each anchor.type combo
-
-    suggestions.forEach(s => {
+    // Build updated array with signer and field name updates
+    // Use reduce initialized with all original suggestions, so getNextInstanceNumber can find existing numbers
+    // This ensures each field in a bulk update gets a unique instance number
+    const updated = suggestions.reduce((accumulator, s, index) => {
       if (selectedFields.has(s.field_name)) {
-        const isExtractedAnchor = extractedSigners.includes(bulkSignerValue);
+        // Check if new signer is an extracted anchor (case-insensitive comparison)
+        const isExtractedAnchor = extractedSigners.some(signer =>
+          signer.toLowerCase() === bulkSignerValue.toLowerCase()
+        );
 
         let newFieldName = s.field_name;
         if (isExtractedAnchor) {
-          // Extract type from old field name (e.g., "resident.text.1" -> "text")
-          const match = s.field_name.match(/^[^.]+\.([^.]+)\.\d+$/);
-          if (match) {
-            const fieldType = match[1];
-            const key = `${bulkSignerValue}.${fieldType}`;
-
-            // Initialize or increment the instance counter for this anchor.type
-            if (!nextInstanceMap[key]) {
-              // Find the highest existing instance
-              const pattern = new RegExp(`^${bulkSignerValue}\\.${fieldType}\\.(\\d+)$`);
-              let maxInstance = 0;
-              updated.forEach(u => {
-                const m = (u.field_name || '').match(pattern);
-                if (m) maxInstance = Math.max(maxInstance, parseInt(m[1], 10));
-              });
-              suggestions.forEach(u => {
-                if (!selectedFields.has(u.field_name)) {
-                  const m = (u.field_name || '').match(pattern);
-                  if (m) maxInstance = Math.max(maxInstance, parseInt(m[1], 10));
-                }
-              });
-              nextInstanceMap[key] = maxInstance + 1;
-            }
-
-            newFieldName = `${bulkSignerValue}.${fieldType}.${nextInstanceMap[key]}`;
-            nextInstanceMap[key]++;
-          }
+          // Update field name with new anchor, type, and next available instance number
+          // Pass the accumulator (original suggestions + updated fields so far)
+          // so getNextInstanceNumber finds the highest number across all updates
+          newFieldName = updateFieldNameWithNextInstance(s.field_name, bulkSignerValue, accumulator);
+          console.log(`[applyBulkSigner] Field ${s.field_name} → ${newFieldName} (isExtractedAnchor=${isExtractedAnchor})`);
+        } else {
+          console.log(`[applyBulkSigner] Field ${s.field_name} - NOT extracted anchor, skipping field_name update`);
         }
 
-        updated.push({
+        // Update the field at this index in the accumulator
+        accumulator[index] = {
           ...s,
           signer: bulkSignerValue,
           field_name: newFieldName
-        });
-      } else {
-        updated.push(s);
+        };
       }
-    });
+      return accumulator;
+    }, [...suggestions]); // Initialize with copy of all original suggestions
 
     // Update local state immediately for UI feedback
     setSuggestions(updated);
@@ -303,8 +472,13 @@ function ManualEditMarkup() {
       console.log('[applyBulkSigners] Response:', response.data);
 
       // Refresh from backend to confirm save
-      if (response.data.suggestions) {
+      if (response.data.suggestions && Array.isArray(response.data.suggestions)) {
+        console.log('[applyBulkSigners] Updating suggestions from response:', response.data.suggestions.length);
         setSuggestions(response.data.suggestions);
+      } else {
+        // If response doesn't have suggestions, refetch from backend to ensure fresh state
+        console.log('[applyBulkSigners] Response format unexpected, refetching job details');
+        await fetchJobDetails();
       }
 
       setSaveStatus('saved');
@@ -322,16 +496,40 @@ function ManualEditMarkup() {
       setSavingBulkChanges(false);
       setBulkSignerValue('');
       setSelectedFields(new Set());
+      // Reset filters to show all fields after bulk operation
+      setSignerFilter('');
+      setShowDuplicatesOnly(false);
+      setShowPdfStyleOnly(false);
     }
   };
 
   const updateSuggestion = (suggestion, field, value) => {
-    const updated = suggestions.map(s =>
-      s === suggestion ? { ...s, [field]: value } : s
-    );
+    const updated = suggestions.map(s => {
+      if (s === suggestion) {
+        const updated = { ...s, [field]: value };
+
+        // If signer is being changed, also update field name to reflect new anchor
+        if (field === 'signer' && value) {
+          const isExtractedAnchor = extractedSigners.some(signer =>
+            signer.toLowerCase() === value.toLowerCase()
+          );
+
+          if (isExtractedAnchor) {
+            // Update field name with new anchor, type, and next available instance number
+            updated.field_name = updateFieldNameWithNextInstance(s.field_name, value, suggestions);
+          }
+        }
+
+        return updated;
+      }
+      return s;
+    });
     setSuggestions(updated);
     setHasLocalEdits(true); // Mark that there are unsaved edits
   };
+
+  // Helper to get field anchor for checks
+  const getFieldAnchor = (fieldName) => (fieldName || '').match(/^([^.\[]+)/)?.[1] || '';
 
   // Filter and pagination
   const filteredSuggestions = suggestions.filter(s => {
@@ -340,9 +538,23 @@ function ManualEditMarkup() {
 
     // For signer filter: extract anchor from field name and compare (case-insensitive)
     if (signerFilter) {
-      const fieldNameAnchor = (s.field_name || '').match(/^([^.\[]+)/)?.[1] || '';
+      const fieldNameAnchor = getFieldAnchor(s.field_name);
       if (fieldNameAnchor.toLowerCase() !== signerFilter.toLowerCase()) return false;
     }
+
+    // Filter for duplicate field names only
+    if (showDuplicatesOnly && !duplicateFieldNames.has(s.field_name)) {
+      return false;
+    }
+
+    // Filter for PDF-style anchors only
+    if (showPdfStyleOnly) {
+      const anchor = getFieldAnchor(s.field_name);
+      if (!pdfStyleAnchors.has(anchor)) {
+        return false;
+      }
+    }
+
     return true;
   });
 
@@ -351,10 +563,11 @@ function ManualEditMarkup() {
   const uniqueSigners = [...new Set(suggestions.map(s => s.signer).filter(Boolean))];
 
   const getAvailableSigners = () => {
-    // Combine: extracted anchors + custom signers + base signers from job
+    // Combine: valid extracted anchors + custom signers + base signers from job
+    // Explicitly EXCLUDE PDF-style anchors from this list
     const signers = new Set();
 
-    // Add extracted signers (from field names)
+    // Add only VALID extracted signers (PDF-style ones are intentionally excluded)
     extractedSigners.forEach(s => signers.add(s));
 
     // Add custom signers
@@ -385,7 +598,7 @@ function ManualEditMarkup() {
       if (response.data.pdf) {
         const link = document.createElement('a');
         link.href = response.data.pdf;
-        link.download = `${job.document_title || 'form'}-marked.pdf`;
+        link.download = `${job.document_title || 'form'}-applied.pdf`;
         link.click();
       }
 
@@ -397,7 +610,7 @@ function ManualEditMarkup() {
     }
   };
 
-  if (loading) {
+  if (loading || !shouldShowContent) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
         <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
@@ -745,6 +958,84 @@ function ManualEditMarkup() {
           </div>
         )}
 
+        {/* Duplicate Field Names Warning */}
+        {duplicateFieldNames.size > 0 && (
+          <div className="mb-4 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 text-yellow-600 font-bold text-lg">⚠️</div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-yellow-800 mb-2">
+                  {duplicateFieldNames.size} Duplicate Field Name{duplicateFieldNames.size > 1 ? 's' : ''} Detected
+                </h3>
+                <p className="text-xs text-yellow-700 mb-3">
+                  The following field names appear multiple times. This may be intentional (repeated names, dates, etc.), but please verify this is what you intend:
+                </p>
+                <div className="text-xs text-yellow-700 mb-3">
+                  <strong>Duplicates:</strong> {Array.from(duplicateFieldNames).sort().join(', ')}
+                </div>
+                <button
+                  onClick={() => setShowDuplicatesOnly(!showDuplicatesOnly)}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    showDuplicatesOnly
+                      ? 'bg-yellow-600 text-white hover:bg-yellow-700'
+                      : 'bg-yellow-200 text-yellow-800 hover:bg-yellow-300'
+                  }`}
+                >
+                  {showDuplicatesOnly ? '✓ Showing Duplicates Only' : 'Show Duplicates Only'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PDF-Style Anchors Warning */}
+        {pdfStyleAnchors.size > 0 && (
+          <div className="mb-4 bg-red-50 border-l-4 border-red-400 p-4 rounded">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 text-red-600 font-bold text-lg">⚠️</div>
+              <div className="flex-1">
+                <h3 className="text-sm font-semibold text-red-800 mb-2">
+                  {pdfStyleAnchors.size} Non-Standard Anchor{pdfStyleAnchors.size > 1 ? 's' : ''} Detected
+                </h3>
+                <p className="text-xs text-red-700 mb-3">
+                  The following field name anchors do not conform to ALIS standards (should be simple nouns like: resident, staff, admin). These PDF-style field names are highlighted below and will NOT be added as signer options. To use them, manually create new signers:
+                </p>
+                <div className="text-xs text-red-700 mb-3">
+                  <strong>Non-standard anchors:</strong> {Array.from(pdfStyleAnchors).sort().join(', ')}
+                </div>
+                <button
+                  onClick={() => setShowPdfStyleOnly(!showPdfStyleOnly)}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    showPdfStyleOnly
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : 'bg-red-200 text-red-800 hover:bg-red-300'
+                  }`}
+                >
+                  {showPdfStyleOnly ? '✓ Showing Non-Standard Only' : 'Show Non-Standard Only'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Preview Controls */}
+        <div className="mb-4 flex justify-end gap-2">
+          <button
+            onClick={expandAllPreviews}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium"
+            title="Expand all preview drawers"
+          >
+            Expand All Previews
+          </button>
+          <button
+            onClick={collapseAllPreviews}
+            className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 text-sm font-medium"
+            title="Collapse all preview drawers"
+          >
+            Collapse All
+          </button>
+        </div>
+
         {/* Fields Table */}
         <div className="bg-white rounded-lg shadow-md overflow-hidden overflow-x-auto">
           <table className="w-full border-collapse whitespace-nowrap">
@@ -770,9 +1061,15 @@ function ManualEditMarkup() {
               </tr>
             </thead>
             <tbody>
-              {filteredSuggestions.map((s, idx) => (
+              {filteredSuggestions.map((s, idx) => {
+                const anchor = getFieldAnchor(s.field_name);
+                const isPdfStyle = pdfStyleAnchors.has(anchor);
+                const isDuplicate = duplicateFieldNames.has(s.field_name);
+                const rowBgClass = isPdfStyle ? 'bg-red-50' : isDuplicate ? 'bg-yellow-50' : '';
+
+                return (
                 <React.Fragment key={idx}>
-                  <tr className="border-b border-gray-200 hover:bg-gray-50">
+                  <tr className={`border-b border-gray-200 hover:bg-gray-50 ${rowBgClass}`}>
                     <td className="px-4 py-3">
                       <input
                         type="checkbox"
@@ -782,12 +1079,28 @@ function ManualEditMarkup() {
                       />
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      <input
-                        type="text"
-                        value={s.field_name}
-                        onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
-                        className="px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[380px]"
-                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={s.field_name}
+                          onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
+                          className={`px-2 py-1 border rounded focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[380px] ${
+                            isPdfStyle ? 'border-red-300 bg-red-50' :
+                            isDuplicate ? 'border-yellow-300 bg-yellow-50' :
+                            'border-gray-300'
+                          }`}
+                        />
+                        {isPdfStyle && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-200 text-red-800 whitespace-nowrap">
+                            ⚠️ Non-standard
+                          </span>
+                        )}
+                        {isDuplicate && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-200 text-yellow-800 whitespace-nowrap">
+                            ⚠️ Duplicate
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">{s.field_type}</td>
                     <td className="px-4 py-3 text-sm">
@@ -880,7 +1193,8 @@ function ManualEditMarkup() {
                     </tr>
                   )}
                 </React.Fragment>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -903,7 +1217,7 @@ function ManualEditMarkup() {
           </button>
         </div>
       </div>
-        </div>
+    </div>
     </div>
   );
 }
