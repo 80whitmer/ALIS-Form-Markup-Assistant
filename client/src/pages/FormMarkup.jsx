@@ -75,9 +75,19 @@ function FormMarkup() {
 
       let initializedSuggestions = response.data.suggestions || [];
 
-      const signers = response.data.job?.signers
-        ? JSON.parse(response.data.job.signers)
-        : ['Resident', 'Staff'];
+      const signers = (() => {
+        const signersData = response.data.job?.signers;
+        if (!signersData) return ['Resident', 'Staff'];
+
+        if (Array.isArray(signersData)) return signersData;
+
+        try {
+          const parsed = JSON.parse(signersData);
+          return Array.isArray(parsed) ? parsed : ['Resident', 'Staff'];
+        } catch (e) {
+          return ['Resident', 'Staff'];
+        }
+      })();
 
       if (signers.length > 0) {
         initializedSuggestions = initializedSuggestions.map((suggestion, index) => {
@@ -357,7 +367,22 @@ function FormMarkup() {
     : filteredSuggestions.filter(s => (s.field_page || 1) === selectedPage);
 
   const pageSuggestions = displaySuggestions;
-  const configuredSigners = job && job.signers ? JSON.parse(job.signers) : ['Resident', 'Staff'];
+
+  const configuredSigners = (() => {
+    if (!job || !job.signers) return ['Resident', 'Staff'];
+
+    // If already an array, return it
+    if (Array.isArray(job.signers)) return job.signers;
+
+    // Otherwise try to parse as JSON
+    try {
+      const parsed = JSON.parse(job.signers);
+      return Array.isArray(parsed) ? parsed : ['Resident', 'Staff'];
+    } catch (e) {
+      return ['Resident', 'Staff'];
+    }
+  })();
+
   const pageIndices = pageSuggestions.map(s => suggestions.indexOf(s));
   const selectedOnPage = pageIndices.filter(i => selectedFields.has(i)).length;
 

@@ -129,24 +129,28 @@ def update_hierarchy_holistically(field_ref, suggested_code):
     print(f"[field-updater] [DEBUG]   New segments:  {' -> '.join(segments)}")
     print(f"[field-updater] [DEBUG]   Named levels: {len(named_levels)}, Segments: {len(segments)}")
 
-    # COMPLETELY REPLACE each named level with corresponding segment
-    # If we have more named levels than segments, that's a problem
-    # If we have fewer, the last segment stays on the leaf
-    for i, level in enumerate(named_levels):
-        if i < len(segments):
-            level['/T'] = segments[i]
-        # else: if we have more named levels than segments, leave them unchanged
-        # This should not happen in normal flow
+    # STRATEGY: If we have fewer named levels than segments (typical case),
+    # join all segments and assign to the leaf field. Otherwise, distribute.
+    if len(named_levels) == 1 and len(segments) > 1:
+        # Single named level with multiple segments: use full dot-separated name
+        full_name = '.'.join(segments)
+        named_levels[0]['/T'] = full_name
+        result = full_name
+    else:
+        # Multiple named levels or single segment: distribute as before
+        for i, level in enumerate(named_levels):
+            if i < len(segments):
+                level['/T'] = segments[i]
+        # Build result string for logging
+        new_names = []
+        for level in named_levels:
+            try:
+                name = str(level['/T']).replace('"', '').replace("'", '')
+                new_names.append(name)
+            except:
+                new_names.append('(error)')
+        result = '.'.join(new_names)
 
-    # DEBUG: Log after update
-    new_names = []
-    for level in named_levels:
-        try:
-            name = str(level['/T']).replace('"', '').replace("'", '')
-            new_names.append(name)
-        except:
-            new_names.append('(error)')
-    result = '.'.join(new_names)
     print(f"[field-updater] [DEBUG]   Result: {result}")
 
 
