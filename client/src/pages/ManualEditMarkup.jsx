@@ -213,10 +213,10 @@ function ManualEditMarkup() {
   };
 
   const updateFieldNameAnchor = (fieldName, newAnchor) => {
-    // Extract the current anchor (part before first dot)
-    const match = fieldName.match(/^([^.\[]+)(.*)/);
+    // Extract the anchor and type from field name (e.g., "resident.text.1" -> "text.1")
+    const match = fieldName.match(/^([^.]+)(\..*)/);
     if (match && match[2]) {
-      // Replace the anchor with the new one
+      // Replace the anchor with the new one, keeping type and instance
       return `${newAnchor}${match[2]}`;
     }
     return fieldName;
@@ -228,21 +228,53 @@ function ManualEditMarkup() {
       return;
     }
 
-    const updated = suggestions.map(s => {
-      if (selectedFields.has(s.field_name)) {
-        // If the new signer is an extracted anchor, also update the field name prefix
-        const isExtractedAnchor = extractedSigners.includes(bulkSignerValue);
-        const newFieldName = isExtractedAnchor
-          ? updateFieldNameAnchor(s.field_name, bulkSignerValue)
-          : s.field_name;
+    // Build updated array with proper instance number reassignment
+    let updated = [];
+    const nextInstanceMap = {}; // Track next instance number for each anchor.type combo
 
-        return {
+    suggestions.forEach(s => {
+      if (selectedFields.has(s.field_name)) {
+        const isExtractedAnchor = extractedSigners.includes(bulkSignerValue);
+
+        let newFieldName = s.field_name;
+        if (isExtractedAnchor) {
+          // Extract type from old field name (e.g., "resident.text.1" -> "text")
+          const match = s.field_name.match(/^[^.]+\.([^.]+)\.\d+$/);
+          if (match) {
+            const fieldType = match[1];
+            const key = `${bulkSignerValue}.${fieldType}`;
+
+            // Initialize or increment the instance counter for this anchor.type
+            if (!nextInstanceMap[key]) {
+              // Find the highest existing instance
+              const pattern = new RegExp(`^${bulkSignerValue}\\.${fieldType}\\.(\\d+)$`);
+              let maxInstance = 0;
+              updated.forEach(u => {
+                const m = (u.field_name || '').match(pattern);
+                if (m) maxInstance = Math.max(maxInstance, parseInt(m[1], 10));
+              });
+              suggestions.forEach(u => {
+                if (!selectedFields.has(u.field_name)) {
+                  const m = (u.field_name || '').match(pattern);
+                  if (m) maxInstance = Math.max(maxInstance, parseInt(m[1], 10));
+                }
+              });
+              nextInstanceMap[key] = maxInstance + 1;
+            }
+
+            newFieldName = `${bulkSignerValue}.${fieldType}.${nextInstanceMap[key]}`;
+            nextInstanceMap[key]++;
+          }
+        }
+
+        updated.push({
           ...s,
           signer: bulkSignerValue,
           field_name: newFieldName
-        };
+        });
+      } else {
+        updated.push(s);
       }
-      return s;
     });
 
     // Update local state immediately for UI feedback
@@ -293,9 +325,10 @@ function ManualEditMarkup() {
     }
   };
 
-  const updateSuggestion = (index, field, value) => {
-    const updated = [...suggestions];
-    updated[index] = { ...updated[index], [field]: value };
+  const updateSuggestion = (suggestion, field, value) => {
+    const updated = suggestions.map(s =>
+      s === suggestion ? { ...s, [field]: value } : s
+    );
     setSuggestions(updated);
     setHasLocalEdits(true); // Mark that there are unsaved edits
   };
@@ -752,7 +785,7 @@ function ManualEditMarkup() {
                       <input
                         type="text"
                         value={s.field_name}
-                        onChange={(e) => updateSuggestion(idx, 'field_name', e.target.value)}
+                        onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
                         className="px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[380px]"
                       />
                     </td>
@@ -760,7 +793,7 @@ function ManualEditMarkup() {
                     <td className="px-4 py-3 text-sm">
                       <select
                         value={s.signer || ''}
-                        onChange={(e) => updateSuggestion(idx, 'signer', e.target.value)}
+                        onChange={(e) => updateSuggestion(s, 'signer', e.target.value)}
                         className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm"
                       >
                         <option value="">—</option>
@@ -773,7 +806,7 @@ function ManualEditMarkup() {
                       <input
                         type="checkbox"
                         checked={s.required || false}
-                        onChange={(e) => updateSuggestion(idx, 'required', e.target.checked)}
+                        onChange={(e) => updateSuggestion(s, 'required', e.target.checked)}
                         className="w-4 h-4"
                       />
                     </td>
@@ -781,7 +814,7 @@ function ManualEditMarkup() {
                       <input
                         type="checkbox"
                         checked={s.read_only || false}
-                        onChange={(e) => updateSuggestion(idx, 'read_only', e.target.checked)}
+                        onChange={(e) => updateSuggestion(s, 'read_only', e.target.checked)}
                         className="w-4 h-4"
                       />
                     </td>
@@ -789,7 +822,7 @@ function ManualEditMarkup() {
                       <input
                         type="checkbox"
                         checked={s.border || false}
-                        onChange={(e) => updateSuggestion(idx, 'border', e.target.checked)}
+                        onChange={(e) => updateSuggestion(s, 'border', e.target.checked)}
                         className="w-4 h-4"
                       />
                     </td>
@@ -814,17 +847,34 @@ function ManualEditMarkup() {
                     </td>
                   </tr>
                   {expandedRows.has(s.field_name) && (
-                    <tr className="bg-gray-50 border-b border-gray-200">
-                      <td colSpan="10" className="px-4 py-3">
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <p className="text-gray-600">Field Index</p>
-                            <p className="font-medium">{s.field_index}</p>
+                    <tr className="bg-blue-50 border-b border-gray-200">
+                      <td colSpan="10" className="px-4 py-4">
+                        <div className="space-y-4">
+                          {/* Field Details */}
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <p className="text-gray-600 font-semibold">Field Index</p>
+                              <p className="font-medium text-gray-900">{s.field_index}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-600 font-semibold">Confidence</p>
+                              <p className="font-medium text-gray-900">{(s.confidence * 100).toFixed(0)}%</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-gray-600">Confidence</p>
-                            <p className="font-medium">{(s.confidence * 100).toFixed(0)}%</p>
-                          </div>
+
+                          {/* Preview Image */}
+                          {s.preview_image && (
+                            <div className="pt-4 border-t border-blue-300">
+                              <span className="text-xs font-semibold text-gray-700 block mb-3">Field Preview:</span>
+                              <div className="bg-white border border-gray-300 rounded p-4 flex justify-center max-w-md">
+                                <img
+                                  src={s.preview_image}
+                                  alt="Field preview"
+                                  className="max-h-64 rounded border border-gray-200"
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </td>
                     </tr>

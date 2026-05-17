@@ -91,9 +91,13 @@ def extract_preview(pdf_path, page_num, crop_x, crop_y, crop_width, crop_height,
         # 72 points per inch, we're rendering at `dpi` DPI
         scale = dpi / 72.0
         px_x = int(crop_x * scale)
-        px_y = int(crop_y * scale)
         px_width = int(crop_width * scale)
         px_height = int(crop_height * scale)
+
+        # PDF coordinates have origin at BOTTOM-LEFT, image coordinates at TOP-LEFT
+        # Convert Y coordinate by inverting it based on the rendered image height
+        # image_y_from_top = image_height_pixels - pdf_y_from_bottom - height
+        px_y = int(image.height - (crop_y * scale) - px_height)
 
         # Ensure crop region is within image bounds
         px_x = max(0, px_x)
@@ -101,6 +105,8 @@ def extract_preview(pdf_path, page_num, crop_x, crop_y, crop_width, crop_height,
         px_width = min(px_width, image.width - px_x)
         px_height = min(px_height, image.height - px_y)
 
+        print(f"[preview] PDF coords: x={crop_x:.0f}, y={crop_y:.0f}, w={crop_width:.0f}, h={crop_height:.0f}", file=sys.stderr)
+        print(f"[preview] Pixel coords: x={px_x}, y={px_y}, w={px_width}, h={px_height} (image h={image.height})", file=sys.stderr)
         print(f"[preview] Cropping region: ({px_x}, {px_y}, {px_x + px_width}, {px_y + px_height})", file=sys.stderr)
 
         # Crop the image
