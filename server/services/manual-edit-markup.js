@@ -248,11 +248,12 @@ async function runManualEditJob(jobId, options) {
     await new Promise(resolve => setTimeout(resolve, 200));
     const suggestions = fields.map((field, idx) => {
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
-      const displayFieldName = getDisplayFieldName(field.field_name, duplicateInfo);
+      // NOTE: Do NOT use displayFieldName here - that includes "[Duplicate 1/3]" suffixes
+      // Frontend will detect duplicates independently and display them visually
+      // Backend must use original field_name so pdf-field-updater.py can match against PDF
 
       return {
-        field_name: displayFieldName,
-        field_name_original: field.field_name, // Store original for reference
+        field_name: field.field_name, // CRITICAL: Store ORIGINAL field name for pdf-field-updater lookup
         field_type: normalizedType,
         field_page: field.field_page,
         field_index: field.field_index,
@@ -294,7 +295,7 @@ async function runManualEditJob(jobId, options) {
         try {
           const field = fields.find(f => {
             const normalized = f.field_type === 'button' ? 'check' : f.field_type;
-            return f.field_name === suggestion.field_name_original;
+            return f.field_name === suggestion.field_name;
           });
 
           if (!field || field.x === undefined) {

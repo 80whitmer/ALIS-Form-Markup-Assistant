@@ -62,12 +62,28 @@ def set_field_border_properties(pdf_path, output_path, no_outline=True, field_ty
             fields = acro_form['/Fields']
             field_count = len(fields)
             modified_count = 0
+            error_count = 0
 
             print(f"[border-styler] Processing {field_count} fields...")
 
             for i, field_ref in enumerate(fields):
                 try:
-                    field = field_ref.get_object()
+                    # Try to get field object, with fallback if get_object() fails
+                    field = None
+                    try:
+                        if hasattr(field_ref, 'get_object'):
+                            field = field_ref.get_object()
+                        else:
+                            field = field_ref
+                    except Exception as get_obj_err:
+                        # Fallback: use field_ref directly as dict-like object
+                        print(f"[border-styler] WARNING: get_object() failed for field {i+1}, using fallback: {get_obj_err}")
+                        field = field_ref
+
+                    if field is None:
+                        print(f"[border-styler] WARNING: Field {i+1} is None, skipping")
+                        error_count += 1
+                        continue
 
                     # Get field type
                     field_type = None
@@ -86,7 +102,11 @@ def set_field_border_properties(pdf_path, output_path, no_outline=True, field_ty
                     if field_type not in field_types:
                         continue
 
-                    field_name = str(field.get('/T', 'unnamed'))
+                    field_name_obj = field.get('/T', None)
+                    if field_name_obj is None:
+                        field_name = 'unnamed'
+                    else:
+                        field_name = str(field_name_obj)
 
                     # Set border style
                     if no_outline:
@@ -106,22 +126,27 @@ def set_field_border_properties(pdf_path, output_path, no_outline=True, field_ty
                             del field['/C']
 
                         modified_count += 1
-                        print(f"[border-styler] [OK] Field {i+1}/{field_count}: {field_name} ({field_type}) - outline removed")
+                        print(f"[border-styler] SUCCESS: Field {i+1}/{field_count}: {field_name} ({field_type}) - outline removed")
 
                 except Exception as field_err:
-                    print(f"[border-styler] Warning: Could not modify field {i+1}: {field_err}")
+                    print(f"[border-styler] ERROR: Could not modify field {i+1}: {field_err}")
+                    error_count += 1
                     continue
 
             # Save the modified PDF
             pdf.save(output_path)
 
-            print(f"[border-styler] [OK] Modified {modified_count} fields")
-            print(f"[border-styler] [OK] Saved to {output_path}")
+            print(f"[border-styler] Modified {modified_count} fields")
+            if error_count > 0:
+                print(f"[border-styler] WARNING: {error_count} fields had errors")
+            print(f"[border-styler] Saved to {output_path}")
 
             return True
 
     except Exception as err:
         print(f"[border-styler] ERROR: {err}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

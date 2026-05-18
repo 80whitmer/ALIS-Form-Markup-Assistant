@@ -315,6 +315,14 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
             updateFields.push('approval_status = ?');
             updateValues.push(suggestion.approval_status);
           }
+          if (suggestion.suggested_code !== undefined) {
+            updateFields.push('suggested_code = ?');
+            updateValues.push(suggestion.suggested_code);
+          }
+          if (suggestion.anchor_name !== undefined) {
+            updateFields.push('anchor_name = ?');
+            updateValues.push(suggestion.anchor_name);
+          }
 
           if (updateFields.length === 0) {
             console.warn(`[PATCH suggestions] No fields to update for suggestion id=${suggestion.id}`);
@@ -364,6 +372,14 @@ router.patch('/:jobId/suggestions', async (req, res, next) => {
           if (suggestion.approval_status !== undefined) {
             updateFields.push('approval_status = ?');
             updateValues.push(suggestion.approval_status);
+          }
+          if (suggestion.suggested_code !== undefined) {
+            updateFields.push('suggested_code = ?');
+            updateValues.push(suggestion.suggested_code);
+          }
+          if (suggestion.anchor_name !== undefined) {
+            updateFields.push('anchor_name = ?');
+            updateValues.push(suggestion.anchor_name);
           }
 
           if (updateFields.length === 0) {
@@ -424,6 +440,11 @@ router.post('/:jobId/apply', async (req, res, next) => {
     console.log(`[POST apply] Received ${editedSuggestions?.length || 0} suggestions`);
     if (editedSuggestions && editedSuggestions.length > 0) {
       console.log(`[POST apply] First suggestion sample:`, JSON.stringify(editedSuggestions[0], null, 2));
+      // Log all field names and suggested codes for verification
+      console.log(`[POST apply] Field name mapping (for pdf-field-updater.py matching):`);
+      editedSuggestions.forEach((s, i) => {
+        console.log(`[POST apply]   ${i + 1}. field_name="${s.field_name}" -> suggested_code="${s.suggested_code}" (signer=${s.signer})`);
+      });
     }
 
     const job = await db.get('SELECT * FROM jobs WHERE id = ?', [jobId]);
@@ -485,16 +506,24 @@ router.post('/:jobId/apply', async (req, res, next) => {
           updateFields.push('approval_status = ?');
           updateValues.push(suggestion.approval_status);
         }
+        if (suggestion.suggested_code !== undefined) {
+          updateFields.push('suggested_code = ?');
+          updateValues.push(suggestion.suggested_code);
+        }
+        if (suggestion.anchor_name !== undefined) {
+          updateFields.push('anchor_name = ?');
+          updateValues.push(suggestion.anchor_name);
+        }
 
         if (updateFields.length > 0) {
           updateValues.push(suggestion.id, jobId);
           const query = `UPDATE suggestions SET ${updateFields.join(', ')} WHERE id = ? AND job_id = ?`;
           console.log(`[POST apply] Executing update for suggestion ID ${suggestion.id}: ${updateFields.join(', ')}`);
           await db.run(query, updateValues);
-          console.log(`[POST apply] ✓ Updated suggestion ID ${suggestion.id} (${suggestion.field_name})`);
+          console.log(`[POST apply] Updated suggestion ID ${suggestion.id} (${suggestion.field_name})`);
           savedCount++;
         } else {
-          console.log(`[POST apply] ⚠️ No update fields for suggestion ID ${suggestion.id}`);
+          console.log(`[POST apply] No update fields for suggestion ID ${suggestion.id}`);
         }
       } catch (updateErr) {
         console.error(`[POST apply] ✗ Error saving suggestion id=${suggestion.id}:`, updateErr.message);

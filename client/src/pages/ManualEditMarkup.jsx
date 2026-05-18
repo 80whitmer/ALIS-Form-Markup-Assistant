@@ -110,29 +110,38 @@ function ManualEditMarkup() {
       const allAvailableSigners = new Set([...jobSigners, ...extractedValidSigners]);
 
       const suggestionsWithAutoSigner = sugg.map(s => {
-        // If signer is already set, don't override it
-        if (s.signer) {
-          return s;
-        }
+        let updated = { ...s };
 
         // Extract anchor from field name (first part before dot or bracket)
         const anchor = (s.field_name || '').match(/^([^.\[]+)/)?.[1];
 
-        if (!anchor) {
-          return s;
+        // If signer is not set, try to auto-populate it
+        if (!s.signer && anchor) {
+          // Try to find a matching signer (case-insensitive)
+          const matchingSigner = Array.from(allAvailableSigners).find(
+            signer => signer.toLowerCase() === anchor.toLowerCase()
+          );
+
+          if (matchingSigner) {
+            updated.signer = matchingSigner.toLowerCase();
+          }
         }
 
-        // Try to find a matching signer (case-insensitive)
-        const matchingSigner = Array.from(allAvailableSigners).find(
-          signer => signer.toLowerCase() === anchor.toLowerCase()
-        );
-
-        if (matchingSigner) {
-          return { ...s, signer: matchingSigner.toLowerCase() };
+        // Ensure suggested_code is populated (use field_name if not set)
+        if (!updated.suggested_code) {
+          updated.suggested_code = updated.field_name;
         }
 
-        // No match found, leave signer as is (empty/null)
-        return s;
+        // Ensure anchor_name is populated (use signer if available, else extract from field_name)
+        if (!updated.anchor_name) {
+          if (updated.signer) {
+            updated.anchor_name = updated.signer.toLowerCase();
+          } else if (anchor) {
+            updated.anchor_name = anchor.toLowerCase();
+          }
+        }
+
+        return updated;
       });
 
       setSuggestions(suggestionsWithAutoSigner);
@@ -281,7 +290,10 @@ function ManualEditMarkup() {
           ...s,
           required: bulkProperties.required !== null ? bulkProperties.required : s.required,
           read_only: bulkProperties.read_only !== null ? bulkProperties.read_only : s.read_only,
-          border: bulkProperties.border !== null ? bulkProperties.border : s.border
+          border: bulkProperties.border !== null ? bulkProperties.border : s.border,
+          // Ensure suggested_code and anchor_name are set for all updates
+          suggested_code: s.suggested_code || s.field_name,
+          anchor_name: s.anchor_name || getFieldAnchor(s.field_name).toLowerCase()
         };
       }
       return s;
@@ -425,22 +437,31 @@ function ManualEditMarkup() {
           signer.toLowerCase() === bulkSignerValue.toLowerCase()
         );
 
-        let newFieldName = s.field_name;
+        // CRITICAL: Never modify field_name - it's the original PDF field name needed for field lookup
+        // Only update suggested_code based on the field's type/instance with the new signer
+        let newSuggestedCode = s.suggested_code; // Default to existing
+
         if (isExtractedAnchor) {
-          // Update field name with new anchor, type, and next available instance number
-          // Pass the accumulator (original suggestions + updated fields so far)
-          // so getNextInstanceNumber finds the highest number across all updates
-          newFieldName = updateFieldNameWithNextInstance(s.field_name, bulkSignerValue, accumulator);
-          console.log(`[applyBulkSigner] Field ${s.field_name} → ${newFieldName} (isExtractedAnchor=${isExtractedAnchor})`);
+          // Build suggested_code from new signer + original field's type and instance
+          // Handles both ALIS format (resident.text.2) and PDF-style format (CheckBox14)
+          const { type, instance } = extractTypeAndInstance(s.field_name);
+          if (type && instance) {
+            newSuggestedCode = `${bulkSignerValue}.${type}.${instance}`;
+            console.log(`[applyBulkSigner] Field ${s.field_name} → suggested_code: ${newSuggestedCode} (signer: ${bulkSignerValue})`);
+          } else {
+            console.log(`[applyBulkSigner] Field ${s.field_name} - Could not extract type/instance, keeping suggested_code as-is`);
+          }
         } else {
-          console.log(`[applyBulkSigner] Field ${s.field_name} - NOT extracted anchor, skipping field_name update`);
+          console.log(`[applyBulkSigner] Field ${s.field_name} - NOT extracted anchor, keeping suggested_code as-is`);
         }
 
         // Update the field at this index in the accumulator
         accumulator[index] = {
           ...s,
           signer: bulkSignerValue,
-          field_name: newFieldName
+          // NEVER modify field_name - it stays as the original PDF field name
+          suggested_code: newSuggestedCode,
+          anchor_name: bulkSignerValue.toLowerCase() // Set anchor_name to lowercase signer
         };
       }
       return accumulator;
@@ -503,20 +524,68 @@ function ManualEditMarkup() {
     }
   };
 
+  // Helper: Extract type and instance from field_name (handles both dot-separated and PDF-style names)
+  const extractTypeAndInstance = (fieldName) => {
+    if (!fieldName) return { type: null, instance: null };
+
+    const dotParts = fieldName.split('.');
+
+    // Case 1: Dot-separated ALIS format (resident.text.2)
+    if (dotParts.length >= 2) {
+      const fieldType = dotParts[1]; // text, check, signature, etc.
+      const fieldInstance = dotParts.slice(2).join('.'); // Everything after type
+      return { type: fieldType, instance: fieldInstance };
+    }
+
+    // Case 2: PDF-style field names (CheckBox14, TextField1, Signature_1, etc.)
+    // Extract type prefix and numeric/suffix instance
+    const match = fieldName.match(/^([A-Za-z]+)(.*?)(\d+)$/);
+    if (match) {
+      const pdfType = match[1].toLowerCase(); // "CheckBox" -> "check", "TextField" -> "text"
+      const instance = match[3]; // "14" from CheckBox14
+
+      // Map PDF field types to ALIS types
+      const typeMap = {
+        checkbox: 'check',
+        check: 'check',
+        textfield: 'text',
+        text: 'text',
+        signature: 'signature',
+        date: 'date',
+        initial: 'initial'
+      };
+
+      const alisType = typeMap[pdfType] || pdfType;
+      return { type: alisType, instance };
+    }
+
+    // Fallback for unrecognized formats
+    return { type: null, instance: null };
+  };
+
   const updateSuggestion = (suggestion, field, value) => {
     const updated = suggestions.map(s => {
       if (s === suggestion) {
         const updated = { ...s, [field]: value };
 
-        // If signer is being changed, also update field name to reflect new anchor
+        // If signer is being changed, update anchor_name and suggested_code
         if (field === 'signer' && value) {
-          const isExtractedAnchor = extractedSigners.some(signer =>
-            signer.toLowerCase() === value.toLowerCase()
-          );
+          updated.anchor_name = value.toLowerCase(); // Set anchor_name to lowercase signer
 
-          if (isExtractedAnchor) {
-            // Update field name with new anchor, type, and next available instance number
-            updated.field_name = updateFieldNameWithNextInstance(s.field_name, value, suggestions);
+          // Build new suggested_code based on the field's type and instance, with the new signer
+          // Handles both ALIS format (resident.text.2) and PDF-style format (CheckBox14)
+          // Use the CURRENT field_name (which may have been edited by user)
+          const { type, instance } = extractTypeAndInstance(updated.field_name);
+          if (type && instance) {
+            updated.suggested_code = `${value}.${type}.${instance}`;
+          }
+        }
+
+        // If field_name is being changed, recompute suggested_code with current signer
+        if (field === 'field_name' && updated.signer) {
+          const { type, instance } = extractTypeAndInstance(value);
+          if (type && instance) {
+            updated.suggested_code = `${updated.signer}.${type}.${instance}`;
           }
         }
 
@@ -589,10 +658,27 @@ function ManualEditMarkup() {
 
     try {
       const response = await axios.post(`/api/jobs/${jobId}/apply`, {
-        suggestions: suggestions.map(s => ({
-          ...s,
-          approval_status: 'approved'
-        }))
+        suggestions: suggestions.map(s => {
+          // Compute suggested_code if not already set
+          let suggestedCode = s.suggested_code;
+          if (!suggestedCode && s.signer) {
+            // Field hasn't been edited yet - compute ALIS code from signer + field name
+            const { type, instance } = extractTypeAndInstance(s.field_name);
+            if (type && instance) {
+              suggestedCode = `${s.signer}.${type}.${instance}`;
+            } else {
+              // Fallback: just use field_name as-is (no change to field)
+              suggestedCode = s.field_name;
+            }
+          }
+
+          return {
+            ...s,
+            approval_status: 'approved',
+            suggested_code: suggestedCode,
+            anchor_name: s.anchor_name || getFieldAnchor(s.field_name).toLowerCase()
+          };
+        })
       });
 
       if (response.data.pdf) {
@@ -1052,6 +1138,7 @@ function ManualEditMarkup() {
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Field Name</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Type</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Signer</th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Suggested Code</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Req</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">RO</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Border</th>
@@ -1080,16 +1167,21 @@ function ManualEditMarkup() {
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={s.field_name}
-                          onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
-                          className={`px-2 py-1 border rounded focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-[380px] ${
-                            isPdfStyle ? 'border-red-300 bg-red-50' :
-                            isDuplicate ? 'border-yellow-300 bg-yellow-50' :
-                            'border-gray-300'
-                          }`}
-                        />
+                        <div className="relative group">
+                          <input
+                            type="text"
+                            value={s.field_name}
+                            onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
+                            title="This is the PDF field name used to locate the field. Must match exactly what's in the PDF or renaming will fail."
+                            placeholder="PDF field name"
+                            className={`px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[380px] ${
+                              isPdfStyle ? 'border-red-300 bg-red-50' :
+                              isDuplicate ? 'border-yellow-300 bg-yellow-50' :
+                              'border-gray-300 bg-white'
+                            }`}
+                          />
+                          <span className="absolute right-2 top-2 text-gray-400 text-xs cursor-help" title="Critical: Must match the actual PDF field name for renaming to work">ⓘ</span>
+                        </div>
                         {isPdfStyle && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-200 text-red-800 whitespace-nowrap">
                             ⚠️ Non-standard
@@ -1114,6 +1206,9 @@ function ManualEditMarkup() {
                           <option key={signer} value={signer.toLowerCase()}>{signer}</option>
                         ))}
                       </select>
+                    </td>
+                    <td className="px-4 py-3 text-sm font-mono text-blue-700 bg-blue-50 rounded border border-blue-200 whitespace-nowrap">
+                      {s.suggested_code || '—'}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <input
@@ -1161,7 +1256,7 @@ function ManualEditMarkup() {
                   </tr>
                   {expandedRows.has(s.field_name) && (
                     <tr className="bg-blue-50 border-b border-gray-200">
-                      <td colSpan="10" className="px-4 py-4">
+                      <td colSpan="11" className="px-4 py-4">
                         <div className="space-y-4">
                           {/* Field Details */}
                           <div className="grid grid-cols-2 gap-4 text-sm">

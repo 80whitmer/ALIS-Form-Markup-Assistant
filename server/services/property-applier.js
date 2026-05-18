@@ -9,7 +9,7 @@ const { PDFDocument } = require('pdf-lib');
  *
  * @param {string} pdfPath - Path to PDF to process
  * @param {array} suggestions - Array of approved suggestion objects
- * @returns {Promise<boolean>} True if successful or Python not available, false if error
+ * @returns {Promise<object>} {success: boolean, updated: count, message: string}
  */
 async function applyFieldUpdates(pdfPath, suggestions) {
   return new Promise((resolve) => {
@@ -23,7 +23,7 @@ async function applyFieldUpdates(pdfPath, suggestions) {
       if (!fs.existsSync(fieldUpdaterPath)) {
         console.warn('[applier] pdf-field-updater.py not found at', fieldUpdaterPath);
         console.warn('[applier] Skipping field updates (pdf-field-updater.py not available)');
-        resolve(true);  // Don't fail, just skip
+        resolve({success: false, updated: 0, message: 'Field updater script not found'});
         return;
       }
 
@@ -32,7 +32,7 @@ async function applyFieldUpdates(pdfPath, suggestions) {
 
       if (approved.length === 0) {
         console.log('[applier] No approved suggestions to apply');
-        resolve(true);
+        resolve({success: true, updated: 0, message: 'No approved suggestions'});
         return;
       }
 
@@ -78,11 +78,13 @@ async function applyFieldUpdates(pdfPath, suggestions) {
 
         if (code === 0) {
           console.log('[applier] ✓ Field updates completed successfully');
-          resolve(true);
+          // Extract count from stdout if possible
+          const match = stdout.match(/Successfully updated (\d+) field/);
+          const updated = match ? parseInt(match[1], 10) : 0;
+          resolve({success: true, updated, message: 'Field updates applied'});
         } else {
-          console.warn(`[applier] Field updates exited with code ${code}`);
-          console.warn('[applier] Continuing without field updates (pikepdf may not be installed)');
-          resolve(true);  // Don't fail on Python errors, just warn
+          console.warn(`[applier] ❌ Field updates exited with code ${code}`);
+          resolve({success: false, updated: 0, message: `Field updates failed with exit code ${code}`});
         }
       });
 
@@ -96,9 +98,8 @@ async function applyFieldUpdates(pdfPath, suggestions) {
           }
         }
 
-        console.warn('[applier] Could not spawn Python process:', err.message);
-        console.warn('[applier] Field updates skipped (Python may not be available)');
-        resolve(true);  // Don't fail if Python isn't available
+        console.warn('[applier] ❌ Could not spawn Python process:', err.message);
+        resolve({success: false, updated: 0, message: `Could not spawn Python process: ${err.message}`});
       });
 
     } catch (err) {
@@ -111,8 +112,8 @@ async function applyFieldUpdates(pdfPath, suggestions) {
         }
       }
 
-      console.warn('[applier] Field updates skipped:', err.message);
-      resolve(true);  // Don't fail on any errors
+      console.warn('[applier] ❌ Field updates error:', err.message);
+      resolve({success: false, updated: 0, message: `Field updates error: ${err.message}`});
     }
   });
 }
@@ -123,7 +124,7 @@ async function applyFieldUpdates(pdfPath, suggestions) {
  *
  * @param {string} pdfPath - Path to PDF to process
  * @param {array} fieldTypes - Field types to modify (default: ['text', 'signature'])
- * @returns {Promise<boolean>} True if successful or Python not available, false if error
+ * @returns {Promise<object>} {success: boolean, modified: count, message: string}
  */
 async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
   return new Promise((resolve) => {
@@ -135,7 +136,7 @@ async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
       if (!fs.existsSync(borderStylerPath)) {
         console.warn('[applier] pdf-border-styler.py not found at', borderStylerPath);
         console.warn('[applier] Skipping border styling (pdf-border-styler.py not available)');
-        resolve(true);  // Don't fail, just skip border styling
+        resolve({success: false, modified: 0, message: 'Border styler script not found'});
         return;
       }
 
@@ -164,23 +165,24 @@ async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
       pythonProcess.on('close', (code) => {
         if (code === 0) {
           console.log('[applier] ✓ Border styling completed successfully');
-          resolve(true);
+          // Extract count from stdout if possible
+          const match = stdout.match(/Modified (\d+) fields/);
+          const modified = match ? parseInt(match[1], 10) : 0;
+          resolve({success: true, modified, message: 'Border styling applied'});
         } else {
-          console.warn(`[applier] Border styling exited with code ${code}`);
-          console.warn('[applier] Continuing without border styling (pikepdf may not be installed)');
-          resolve(true);  // Don't fail on Python errors, just warn
+          console.warn(`[applier] ❌ Border styling exited with code ${code}`);
+          resolve({success: false, modified: 0, message: `Border styling failed with exit code ${code}`});
         }
       });
 
       pythonProcess.on('error', (err) => {
-        console.warn('[applier] Could not spawn Python process:', err.message);
-        console.warn('[applier] Border styling skipped (Python may not be available)');
-        resolve(true);  // Don't fail if Python isn't available
+        console.warn('[applier] ❌ Could not spawn Python process:', err.message);
+        resolve({success: false, modified: 0, message: `Could not spawn Python process: ${err.message}`});
       });
 
     } catch (err) {
-      console.warn('[applier] Border styling skipped:', err.message);
-      resolve(true);  // Don't fail on any border styling errors
+      console.warn('[applier] ❌ Border styling error:', err.message);
+      resolve({success: false, modified: 0, message: `Border styling error: ${err.message}`});
     }
   });
 }
@@ -245,25 +247,34 @@ async function applyChangesToPDF(inputPath, suggestions, outputPath, isManualEdi
 
     // Post-process: Apply ALL field updates (rename, required, read-only, tooltips) via Python/pikepdf
     console.log(`[applier] Running post-processing: field updates...`);
-    const fieldUpdatesSuccess = await applyFieldUpdates(outputPath, approvedSuggestions);
+    const fieldUpdatesResult = await applyFieldUpdates(outputPath, approvedSuggestions);
 
     // Post-process: Apply border styling via Python/pikepdf
     console.log(`[applier] Running post-processing: border styling...`);
-    const borderStylingSuccess = await applyBorderStyling(outputPath, ['text', 'signature']);
+    const borderStylingResult = await applyBorderStyling(outputPath, ['text', 'signature']);
+
+    // Determine overall success: both operations must succeed
+    const overallSuccess = fieldUpdatesResult.success && borderStylingResult.success;
 
     // Update audit log with final status
     auditLog = auditLog.map(log => ({
       ...log,
-      status: fieldUpdatesSuccess ? 'applied' : 'applied'
+      status: overallSuccess ? 'applied' : 'failed',
+      updateMessage: fieldUpdatesResult.message,
+      styleMessage: borderStylingResult.message
     }));
 
+    console.log(`[applier] Final status: ${overallSuccess ? '✓ SUCCESS' : '❌ FAILED'}`);
+
     return {
-      success: true,
-      changesApplied: approvedSuggestions.length,
+      success: overallSuccess,
+      changesApplied: overallSuccess ? approvedSuggestions.length : 0,
       totalSuggestions: approvedSuggestions.length,
       outputPath,
-      fieldUpdatesApplied: fieldUpdatesSuccess,
-      borderStylingApplied: borderStylingSuccess,
+      fieldUpdatesApplied: fieldUpdatesResult.success,
+      fieldUpdatesCount: fieldUpdatesResult.updated,
+      borderStylingApplied: borderStylingResult.success,
+      borderStylingCount: borderStylingResult.modified,
       auditLog
     };
 

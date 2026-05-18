@@ -53,12 +53,17 @@ def build_full_field_name(field_ref):
         # Walk up the parent chain
         while current is not None:
             if '/T' in current:
-                names.insert(0, str(current['/T']).replace('"', '').replace("'", ''))
+                field_name_obj = current['/T']
+                if field_name_obj is not None:
+                    names.insert(0, str(field_name_obj).replace('"', '').replace("'", ''))
 
             # Get parent if exists
             if '/Parent' in current:
                 parent = current['/Parent']
-                current = parent.get_object() if hasattr(parent, 'get_object') else parent
+                if parent is not None:
+                    current = parent.get_object() if hasattr(parent, 'get_object') else parent
+                else:
+                    current = None
             else:
                 current = None
 
@@ -69,9 +74,12 @@ def build_full_field_name(field_ref):
     except Exception as e:
         # Fallback to leaf name if hierarchy walking fails
         try:
-            return str(field_ref['/T']).replace('"', '').replace("'", '')
+            field_name_obj = field_ref['/T']
+            if field_name_obj is not None:
+                return str(field_name_obj).replace('"', '').replace("'", '')
         except:
-            return 'unnamed'
+            pass
+        return 'unnamed'
 
 
 def normalize_suggested_code(suggested_code):
@@ -94,6 +102,10 @@ def update_hierarchy_holistically(field_ref, suggested_code):
     Example: If hierarchy is [AcroForm, alis, resident, full_name] and suggested_code is 'resident.text.4'
     Result: alis='resident', resident='text', full_name='4' -> 'resident.text.4'
     """
+    if suggested_code is None:
+        print(f"[field-updater] WARNING: suggested_code is None, skipping hierarchy update")
+        return
+
     segments = suggested_code.split('.')
 
     # Collect the ENTIRE hierarchy from leaf back to root
@@ -103,7 +115,10 @@ def update_hierarchy_holistically(field_ref, suggested_code):
         hierarchy.insert(0, current)
         if '/Parent' in current:
             parent = current['/Parent']
-            current = parent.get_object() if hasattr(parent, 'get_object') else parent
+            if parent is not None:
+                current = parent.get_object() if hasattr(parent, 'get_object') else parent
+            else:
+                current = None
         else:
             current = None
 
@@ -112,15 +127,21 @@ def update_hierarchy_holistically(field_ref, suggested_code):
     named_indices = []
     for idx, level in enumerate(hierarchy):
         if '/T' in level:
-            named_levels.append(level)
-            named_indices.append(idx)
+            level_name = level['/T']
+            if level_name is not None:
+                named_levels.append(level)
+                named_indices.append(idx)
 
     # DEBUG: Log before update
     old_names = []
     for level in named_levels:
         try:
-            name = str(level['/T']).replace('"', '').replace("'", '')
-            old_names.append(name)
+            name_obj = level['/T']
+            if name_obj is not None:
+                name = str(name_obj).replace('"', '').replace("'", '')
+                old_names.append(name)
+            else:
+                old_names.append('(None)')
         except:
             old_names.append('(error)')
 
@@ -145,8 +166,12 @@ def update_hierarchy_holistically(field_ref, suggested_code):
         new_names = []
         for level in named_levels:
             try:
-                name = str(level['/T']).replace('"', '').replace("'", '')
-                new_names.append(name)
+                name_obj = level['/T']
+                if name_obj is not None:
+                    name = str(name_obj).replace('"', '').replace("'", '')
+                    new_names.append(name)
+                else:
+                    new_names.append('(None)')
             except:
                 new_names.append('(error)')
         result = '.'.join(new_names)
@@ -184,7 +209,13 @@ def process_field_recursive(field_ref, suggestions):
 
             if field_name == suggestion.get('field_name'):
                 old_name = suggestion['field_name']
-                new_code = suggestion['suggested_code']
+                new_code = suggestion.get('suggested_code')
+
+                # Validate new_code is not None
+                if new_code is None:
+                    print(f"[field-updater] WARNING: suggested_code is None for field {old_name}, skipping")
+                    continue
+
                 # Normalize the suggested code (e.g., button -> check)
                 new_code = normalize_suggested_code(new_code)
                 signer = suggestion['signer']
@@ -193,7 +224,7 @@ def process_field_recursive(field_ref, suggestions):
 
                 # 1. Update entire hierarchy holistically with suggested_code segments
                 update_hierarchy_holistically(field_ref, new_code)
-                print(f"[field-updater] [OK] Renamed: {old_name} -> {new_code}")
+                print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
 
                 # 2. Set required flag (Ff field flags)
                 # Bit 0 (0x1) = ReadOnly
@@ -216,12 +247,12 @@ def process_field_recursive(field_ref, suggestions):
                     flags &= ~0x1  # Clear ReadOnly bit
 
                 field_ref['/Ff'] = flags
-                print(f"[field-updater] [OK] Set flags (required={required}, read_only={read_only})")
+                print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
 
                 # 3. Add tooltip (TU field - Tooltip)
                 tooltip = f"[{signer}] {new_code}"
                 field_ref['/TU'] = tooltip
-                print(f"[field-updater] [OK] Added tooltip")
+                print(f"[field-updater] [SUCCESS] Added tooltip")
 
                 return 1  # One field updated
 
@@ -296,7 +327,7 @@ def update_fields(pdf_path, suggestions, output_path):
 
             # Save the modified PDF
             pdf.save(output_path)
-            print(f"[field-updater] [OK] Saved modified PDF to {output_path}")
+            print(f"[field-updater] [SUCCESS] Saved modified PDF to {output_path}")
             return updated_count
 
     except Exception as e:
@@ -325,33 +356,41 @@ def main():
                 suggestions = json.load(f)
             print(f"[field-updater] Loaded {len(suggestions)} suggestions from file")
         except FileNotFoundError:
-            print(f"[field-updater] ERROR: Suggestions file not found: {args.suggestions_file}")
+            print(f"[field-updater] ❌ ERROR: Suggestions file not found: {args.suggestions_file}")
             sys.exit(1)
         except json.JSONDecodeError as e:
-            print(f"[field-updater] ERROR: Invalid JSON in suggestions file: {e}")
+            print(f"[field-updater] ❌ ERROR: Invalid JSON in suggestions file: {e}")
             sys.exit(1)
     elif args.suggestions:
         # Fallback to command-line JSON string (legacy method)
         try:
             suggestions = json.loads(args.suggestions)
         except json.JSONDecodeError as e:
-            print(f"[field-updater] ERROR: Invalid JSON in suggestions: {e}")
+            print(f"[field-updater] ❌ ERROR: Invalid JSON in suggestions: {e}")
             sys.exit(1)
 
     if not suggestions:
-        print("[field-updater] WARNING: No suggestions provided")
+        print("[field-updater] ⚠️ WARNING: No suggestions provided")
 
     # Update fields
     updated = update_fields(args.input_pdf, suggestions, args.output_pdf)
 
     if updated < 0:
+        print("[field-updater] ❌ Field update failed with exception")
         sys.exit(1)
     elif updated > 0:
-        print(f"[field-updater] [OK] Successfully updated {updated} field(s)")
+        print(f"[field-updater] Successfully updated {updated} field(s)")
         sys.exit(0)
     else:
-        print("[field-updater] No fields were updated")
-        sys.exit(0)
+        # No fields updated - check if suggestions were provided
+        if suggestions and len(suggestions) > 0:
+            # Suggestions provided but none were applied - this is an error
+            print(f"[field-updater] CRITICAL ERROR: {len(suggestions)} suggestions provided but 0 fields updated")
+            sys.exit(1)
+        else:
+            # No suggestions provided, no error
+            print("[field-updater] No suggestions to apply")
+            sys.exit(0)
 
 
 if __name__ == '__main__':
