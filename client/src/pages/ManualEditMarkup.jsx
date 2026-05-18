@@ -1135,7 +1135,8 @@ function ManualEditMarkup() {
                     className="w-4 h-4"
                   />
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Field Name</th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Original Field</th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Field Name (Editable)</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Type</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Signer</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Suggested Code</th>
@@ -1165,6 +1166,9 @@ function ManualEditMarkup() {
                         className="w-4 h-4"
                       />
                     </td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-700 font-mono bg-gray-50 rounded border border-gray-200 whitespace-nowrap max-w-xs overflow-hidden text-ellipsis" title={s.original_field_name || s.field_name}>
+                      {s.original_field_name || s.field_name}
+                    </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       <div className="flex items-center gap-2">
                         <div className="relative group">
@@ -1172,15 +1176,15 @@ function ManualEditMarkup() {
                             type="text"
                             value={s.field_name}
                             onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
-                            title="This is the PDF field name used to locate the field. Must match exactly what's in the PDF or renaming will fail."
-                            placeholder="PDF field name"
-                            className={`px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[380px] ${
+                            title="Editable field name for ALIS naming. Original PDF field name shown in the 'Original Field' column."
+                            placeholder="Editable field name"
+                            className={`px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[300px] ${
                               isPdfStyle ? 'border-red-300 bg-red-50' :
                               isDuplicate ? 'border-yellow-300 bg-yellow-50' :
                               'border-gray-300 bg-white'
                             }`}
                           />
-                          <span className="absolute right-2 top-2 text-gray-400 text-xs cursor-help" title="Critical: Must match the actual PDF field name for renaming to work">ⓘ</span>
+                          <span className="absolute right-2 top-2 text-gray-400 text-xs cursor-help" title="You can edit this for ALIS naming purposes.">ⓘ</span>
                         </div>
                         {isPdfStyle && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-200 text-red-800 whitespace-nowrap">
@@ -1256,7 +1260,7 @@ function ManualEditMarkup() {
                   </tr>
                   {expandedRows.has(s.field_name) && (
                     <tr className="bg-blue-50 border-b border-gray-200">
-                      <td colSpan="11" className="px-4 py-4">
+                      <td colSpan="12" className="px-4 py-4">
                         <div className="space-y-4">
                           {/* Field Details */}
                           <div className="grid grid-cols-2 gap-4 text-sm">

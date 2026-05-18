@@ -70,6 +70,24 @@ function runMigrations(database) {
       }
     });
 
+    // Migration: Add original_field_name column to suggestions table
+    database.all("PRAGMA table_info(suggestions)", (err, columns) => {
+      if (err) {
+        console.warn('Error checking suggestions table schema:', err.message);
+        return;
+      }
+
+      const columnNames = columns.map(col => col.name);
+
+      if (!columnNames.includes('original_field_name')) {
+        console.log('Running migration: Adding original_field_name column to suggestions table');
+        database.run("ALTER TABLE suggestions ADD COLUMN original_field_name TEXT", (err) => {
+          if (err) console.warn('Migration failed:', err.message);
+          else console.log('✓ Migration: original_field_name column added');
+        });
+      }
+    });
+
     // Ensure indexes exist
     database.run("CREATE INDEX IF NOT EXISTS idx_jobs_workflow ON jobs(workflow_type)");
   });

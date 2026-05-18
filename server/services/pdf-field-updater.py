@@ -207,8 +207,12 @@ def process_field_recursive(field_ref, suggestions):
             if suggestion.get('approval_status') != 'approved':
                 continue
 
-            if field_name == suggestion.get('field_name'):
-                old_name = suggestion['field_name']
+            # CRITICAL: Match against original_field_name if available (immutable original PDF field name)
+            # Fall back to field_name for backward compatibility (for suggestions created before original_field_name was added)
+            suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
+
+            if field_name == suggestion_field_name:
+                old_name = suggestion_field_name  # Use the original field name for logging
                 new_code = suggestion.get('suggested_code')
 
                 # Validate new_code is not None

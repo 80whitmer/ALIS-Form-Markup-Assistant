@@ -253,7 +253,8 @@ async function runManualEditJob(jobId, options) {
       // Backend must use original field_name so pdf-field-updater.py can match against PDF
 
       return {
-        field_name: field.field_name, // CRITICAL: Store ORIGINAL field name for pdf-field-updater lookup
+        original_field_name: field.field_name, // IMMUTABLE: Store ORIGINAL field name for pdf-field-updater.py lookup
+        field_name: field.field_name, // EDITABLE: User can change this for ALIS naming (but original_field_name stays the same)
         field_type: normalizedType,
         field_page: field.field_page,
         field_index: field.field_index,
@@ -345,12 +346,13 @@ async function runManualEditJob(jobId, options) {
       try {
         await db.run(
           `INSERT INTO suggestions (
-            job_id, field_page, field_name, field_type,
+            job_id, field_page, original_field_name, field_name, field_type,
             signer, anchor_name, required, read_only, confidence, approval_status, preview_image
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             jobId,
             suggestion.field_page,
+            suggestion.original_field_name, // Immutable: original PDF field name
             suggestion.field_name,
             suggestion.field_type,
             suggestion.signer,
