@@ -48,10 +48,20 @@ function ManualEditMarkup() {
   const [pdfStyleAnchors, setPdfStyleAnchors] = useState(new Set()); // Track PDF-style (invalid) anchors
   const [showPdfStyleOnly, setShowPdfStyleOnly] = useState(false); // Filter for PDF-style anchors only
 
+  // Strip PDF pipe-separated group suffixes: "full_name|alis" → "full_name"
+  const cleanFieldName = (name) => {
+    if (!name) return name;
+    return name.split('|')[0].trim();
+  };
+
+  // Returns true if the field name follows the alis.entity.* data-pull convention
+  const isAlisDataField = (fieldName) => {
+    return cleanFieldName(fieldName)?.startsWith('alis.');
+  };
+
   // Regex to validate ALIS-standard signers: lowercase letters, underscores, hyphens only
   const isValidAlisAnchor = (anchor) => {
     if (!anchor) return false;
-    // Valid ALIS signers: lowercase letters, underscores, hyphens
     return /^[a-z_\-]+$/.test(anchor);
   };
 
@@ -110,7 +120,7 @@ function ManualEditMarkup() {
       const allAvailableSigners = new Set([...jobSigners, ...extractedValidSigners]);
 
       const suggestionsWithAutoSigner = sugg.map(s => {
-        let updated = { ...s };
+        let updated = { ...s, field_name: cleanFieldName(s.field_name) };
 
         // Extract anchor from field name (first part before dot or bracket)
         const anchor = (s.field_name || '').match(/^([^.\[]+)/)?.[1];
@@ -204,7 +214,7 @@ function ManualEditMarkup() {
     const pdfStyleSigners = new Set();
 
     suggestions.forEach(s => {
-      const fieldName = s.field_name || '';
+      const fieldName = cleanFieldName(s.field_name || '');
       // Extract the anchor (part before first dot or bracket)
       const match = fieldName.match(/^([^.\[]+)/);
       if (match && match[1]) {
@@ -441,19 +451,15 @@ function ManualEditMarkup() {
         // Only update suggested_code based on the field's type/instance with the new signer
         let newSuggestedCode = s.suggested_code; // Default to existing
 
-        if (isExtractedAnchor) {
+        const cleanedName = cleanFieldName(s.field_name);
+        if (isExtractedAnchor && !cleanedName?.startsWith('alis.')) {
           // Build suggested_code from new signer + original field's type and instance
-          // Handles both ALIS format (resident.text.2) and PDF-style format (CheckBox14)
-          const { type, instance } = extractTypeAndInstance(s.field_name);
+          const { type, instance } = extractTypeAndInstance(cleanedName);
           if (type && instance) {
             newSuggestedCode = `${bulkSignerValue}.${type}.${instance}`;
-            console.log(`[applyBulkSigner] Field ${s.field_name} → suggested_code: ${newSuggestedCode} (signer: ${bulkSignerValue})`);
-          } else {
-            console.log(`[applyBulkSigner] Field ${s.field_name} - Could not extract type/instance, keeping suggested_code as-is`);
           }
-        } else {
-          console.log(`[applyBulkSigner] Field ${s.field_name} - NOT extracted anchor, keeping suggested_code as-is`);
         }
+        // alis.entity.* fields: suggested_code stays as-is (don't reconstruct)
 
         // Update the field at this index in the accumulator
         accumulator[index] = {
@@ -570,22 +576,28 @@ function ManualEditMarkup() {
 
         // If signer is being changed, update anchor_name and suggested_code
         if (field === 'signer' && value) {
-          updated.anchor_name = value.toLowerCase(); // Set anchor_name to lowercase signer
-
-          // Build new suggested_code based on the field's type and instance, with the new signer
-          // Handles both ALIS format (resident.text.2) and PDF-style format (CheckBox14)
-          // Use the CURRENT field_name (which may have been edited by user)
-          const { type, instance } = extractTypeAndInstance(updated.field_name);
-          if (type && instance) {
-            updated.suggested_code = `${value}.${type}.${instance}`;
+          updated.anchor_name = value.toLowerCase();
+          // alis.entity.* fields keep their own naming — don't reconstruct as anchor.type.instance
+          if (!isAlisDataField(updated.field_name)) {
+            const { type, instance } = extractTypeAndInstance(cleanFieldName(updated.field_name));
+            if (type && instance) {
+              updated.suggested_code = `${value}.${type}.${instance}`;
+            }
           }
         }
 
-        // If field_name is being changed, recompute suggested_code with current signer
-        if (field === 'field_name' && updated.signer) {
-          const { type, instance } = extractTypeAndInstance(value);
-          if (type && instance) {
-            updated.suggested_code = `${updated.signer}.${type}.${instance}`;
+        // If field_name is being changed, clean pipe artifacts and recompute suggested_code
+        if (field === 'field_name') {
+          const cleanedValue = cleanFieldName(value);
+          updated.field_name = cleanedValue;
+          if (cleanedValue?.startsWith('alis.')) {
+            // alis data fields: suggested_code mirrors the field name directly
+            updated.suggested_code = cleanedValue;
+          } else if (updated.signer) {
+            const { type, instance } = extractTypeAndInstance(cleanedValue);
+            if (type && instance) {
+              updated.suggested_code = `${updated.signer}.${type}.${instance}`;
+            }
           }
         }
 
@@ -1123,11 +1135,25 @@ function ManualEditMarkup() {
         </div>
 
         {/* Fields Table */}
-        <div className="bg-white rounded-lg shadow-md overflow-hidden overflow-x-auto">
-          <table className="w-full border-collapse whitespace-nowrap">
+        <div className="bg-white rounded-lg shadow-md overflow-hidden">
+          <table className="w-full border-collapse table-fixed">
+            <colgroup>
+              <col style={{width:'3%'}} />
+              <col style={{width:'13%'}} />
+              <col style={{width:'21%'}} />
+              <col style={{width:'7%'}} />
+              <col style={{width:'11%'}} />
+              <col style={{width:'17%'}} />
+              <col style={{width:'4%'}} />
+              <col style={{width:'4%'}} />
+              <col style={{width:'5%'}} />
+              <col style={{width:'5%'}} />
+              <col style={{width:'6%'}} />
+              <col style={{width:'4%'}} />
+            </colgroup>
             <thead className="bg-gray-100 border-b-2 border-gray-300">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700 w-10">
+                <th className="px-3 py-3 text-left text-sm font-semibold text-gray-700">
                   <input
                     type="checkbox"
                     checked={selectedFields.size === filteredSuggestions.length && filteredSuggestions.length > 0}
@@ -1135,17 +1161,17 @@ function ManualEditMarkup() {
                     className="w-4 h-4"
                   />
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Original Field</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Field Name (Editable)</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Type</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Signer</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Suggested Code</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Req</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">RO</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Border</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Preview</th>
-                <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Page</th>
-                <th className="px-4 py-3"></th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Original Field</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Field Name (Editable)</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Type</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Signer</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Suggested Code</th>
+                <th className="px-3 py-3 text-center text-xs font-semibold text-gray-700">Req</th>
+                <th className="px-3 py-3 text-center text-xs font-semibold text-gray-700">RO</th>
+                <th className="px-3 py-3 text-center text-xs font-semibold text-gray-700">Border</th>
+                <th className="px-3 py-3 text-center text-xs font-semibold text-gray-700">Preview</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Page</th>
+                <th className="px-3 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -1158,7 +1184,7 @@ function ManualEditMarkup() {
                 return (
                 <React.Fragment key={idx}>
                   <tr className={`border-b border-gray-200 hover:bg-gray-50 ${rowBgClass}`}>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2">
                       <input
                         type="checkbox"
                         checked={selectedFields.has(s.field_name)}
@@ -1166,44 +1192,39 @@ function ManualEditMarkup() {
                         className="w-4 h-4"
                       />
                     </td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-700 font-mono bg-gray-50 rounded border border-gray-200 whitespace-nowrap max-w-xs overflow-hidden text-ellipsis" title={s.original_field_name || s.field_name}>
-                      {s.original_field_name || s.field_name}
+                    <td className="px-3 py-2 max-w-0 overflow-hidden" title={s.original_field_name || s.field_name}>
+                      <div className="truncate text-xs font-mono text-gray-600 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200">
+                        {s.original_field_name || s.field_name}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      <div className="flex items-center gap-2">
-                        <div className="relative group">
-                          <input
-                            type="text"
-                            value={s.field_name}
-                            onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
-                            title="Editable field name for ALIS naming. Original PDF field name shown in the 'Original Field' column."
-                            placeholder="Editable field name"
-                            className={`px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[300px] ${
-                              isPdfStyle ? 'border-red-300 bg-red-50' :
-                              isDuplicate ? 'border-yellow-300 bg-yellow-50' :
-                              'border-gray-300 bg-white'
-                            }`}
-                          />
-                          <span className="absolute right-2 top-2 text-gray-400 text-xs cursor-help" title="You can edit this for ALIS naming purposes.">ⓘ</span>
-                        </div>
+                    <td className="px-3 py-2 max-w-0">
+                      <div className="flex flex-col gap-1">
+                        <input
+                          type="text"
+                          value={s.field_name}
+                          onChange={(e) => updateSuggestion(s, 'field_name', e.target.value)}
+                          title={s.field_name}
+                          placeholder="field name"
+                          className={`w-full px-2 py-1 border rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                            isPdfStyle ? 'border-red-300 bg-red-50' :
+                            isDuplicate ? 'border-yellow-300 bg-yellow-50' :
+                            'border-gray-300 bg-white'
+                          }`}
+                        />
                         {isPdfStyle && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-200 text-red-800 whitespace-nowrap">
-                            ⚠️ Non-standard
-                          </span>
+                          <span className="text-xs font-medium text-red-700">⚠ Non-std</span>
                         )}
                         {isDuplicate && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-200 text-yellow-800 whitespace-nowrap">
-                            ⚠️ Duplicate
-                          </span>
+                          <span className="text-xs font-medium text-yellow-700">⚠ Duplicate</span>
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{s.field_type}</td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-3 py-2 text-xs text-gray-700">{s.field_type}</td>
+                    <td className="px-3 py-2">
                       <select
                         value={s.signer || ''}
                         onChange={(e) => updateSuggestion(s, 'signer', e.target.value)}
-                        className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm"
+                        className="w-full px-1 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 text-xs"
                       >
                         <option value="">—</option>
                         {getAvailableSigners().map(signer => (
@@ -1211,10 +1232,12 @@ function ManualEditMarkup() {
                         ))}
                       </select>
                     </td>
-                    <td className="px-4 py-3 text-sm font-mono text-blue-700 bg-blue-50 rounded border border-blue-200 whitespace-nowrap">
-                      {s.suggested_code || '—'}
+                    <td className="px-3 py-2 max-w-0 overflow-hidden" title={s.suggested_code || '—'}>
+                      <div className="truncate text-xs font-mono text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        {s.suggested_code || '—'}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2 text-center">
                       <input
                         type="checkbox"
                         checked={s.required || false}
@@ -1222,7 +1245,7 @@ function ManualEditMarkup() {
                         className="w-4 h-4"
                       />
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2 text-center">
                       <input
                         type="checkbox"
                         checked={s.read_only || false}
@@ -1230,7 +1253,7 @@ function ManualEditMarkup() {
                         className="w-4 h-4"
                       />
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2 text-center">
                       <input
                         type="checkbox"
                         checked={s.border || false}
@@ -1238,7 +1261,7 @@ function ManualEditMarkup() {
                         className="w-4 h-4"
                       />
                     </td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2 text-center">
                       {s.preview_image && (
                         <button
                           onClick={() => setSelectedPreviewId(s.field_name)}
@@ -1248,8 +1271,8 @@ function ManualEditMarkup() {
                         </button>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{s.field_page || 1}</td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2 text-xs text-gray-700">{s.field_page || 1}</td>
+                    <td className="px-3 py-2 text-center">
                       <button
                         onClick={() => toggleRowExpanded(s.field_name)}
                         className="text-gray-400 hover:text-gray-600"

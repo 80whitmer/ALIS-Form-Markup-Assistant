@@ -2,7 +2,7 @@
   "name": "alis-form-markup-client",
   "version": "0.1.0",
   "private": true,
-  "proxy": "http://localhost:3000",
+  "proxy": "http://localhost:3002",
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

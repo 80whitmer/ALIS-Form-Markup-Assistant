@@ -150,31 +150,35 @@ def update_hierarchy_holistically(field_ref, suggested_code):
     print(f"[field-updater] [DEBUG]   New segments:  {' -> '.join(segments)}")
     print(f"[field-updater] [DEBUG]   Named levels: {len(named_levels)}, Segments: {len(segments)}")
 
-    # STRATEGY: If we have fewer named levels than segments (typical case),
-    # join all segments and assign to the leaf field. Otherwise, distribute.
+    # STRATEGY:
+    # 1) Flat field (1 named level, multiple segments): assign full dot-joined string to that level.
+    # 2) Exact match (named levels == segments): distribute one segment per level.
+    # 3) Mismatch: only update the leaf (last named level) with the last segment so parent
+    #    nodes — which may contain dots in their own /T value — are never corrupted.
     if len(named_levels) == 1 and len(segments) > 1:
-        # Single named level with multiple segments: use full dot-separated name
         full_name = '.'.join(segments)
         named_levels[0]['/T'] = full_name
         result = full_name
-    else:
-        # Multiple named levels or single segment: distribute as before
+    elif len(named_levels) == len(segments):
         for i, level in enumerate(named_levels):
-            if i < len(segments):
-                level['/T'] = segments[i]
-        # Build result string for logging
+            level['/T'] = segments[i]
         new_names = []
         for level in named_levels:
             try:
                 name_obj = level['/T']
                 if name_obj is not None:
-                    name = str(name_obj).replace('"', '').replace("'", '')
-                    new_names.append(name)
+                    new_names.append(str(name_obj).replace('"', '').replace("'", ''))
                 else:
                     new_names.append('(None)')
             except:
                 new_names.append('(error)')
         result = '.'.join(new_names)
+    else:
+        # Segment count doesn't match named level count. Only rename the leaf with
+        # the last segment so the parent hierarchy structure is preserved intact.
+        print(f"[field-updater] [DEBUG]   Segment/level mismatch ({len(segments)} segments, {len(named_levels)} levels) — updating leaf only")
+        named_levels[-1]['/T'] = segments[-1]
+        result = '.'.join(segments)
 
     print(f"[field-updater] [DEBUG]   Result: {result}")
 
@@ -222,6 +226,12 @@ def process_field_recursive(field_ref, suggestions):
 
                 # Normalize the suggested code (e.g., button -> check)
                 new_code = normalize_suggested_code(new_code)
+
+                # Append |anchor_name to encode the signer in the field name (ALIS convention)
+                anchor_name = suggestion.get('anchor_name')
+                if anchor_name:
+                    new_code = f"{new_code}|{anchor_name}"
+
                 signer = suggestion['signer']
                 required = suggestion.get('required', True)
                 read_only = suggestion.get('read_only', False)

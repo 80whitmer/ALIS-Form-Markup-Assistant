@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,6 +18,7 @@ db.initialize();
 // Routes
 app.use('/api/jobs', require('./api/jobs'));
 app.use('/api/downloads', require('./api/downloads'));
+app.use('/api/hubspot', require('./api/hubspot'));
 
 // Development endpoints (dev mode only)
 if (process.env.NODE_ENV === 'development') {
