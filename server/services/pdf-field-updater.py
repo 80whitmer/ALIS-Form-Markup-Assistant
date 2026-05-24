@@ -175,10 +175,25 @@ def update_hierarchy_holistically(field_ref, suggested_code):
             except:
                 new_names.append('(error)')
         result = '.'.join(new_names)
+    elif len(segments) > len(named_levels):
+        # More segments than hierarchy levels.
+        # Distribute the first (N-1) segments one-per-level, then pack all remaining
+        # segments (dot-joined) into the leaf so the full path reads as the complete
+        # suggested_code.
+        # Example: 3 levels [alis, associated_contact, person_full_name],
+        #          5 segments [alis, associated_contact, power_of_attorney, 1, person_full_name]
+        #   → level[0]='alis', level[1]='associated_contact',
+        #     level[2]='power_of_attorney.1.person_full_name'
+        #   → full path: alis.associated_contact.power_of_attorney.1.person_full_name ✓
+        print(f"[field-updater] [DEBUG]   More segments ({len(segments)}) than levels ({len(named_levels)}) — distributing, packing tail into leaf")
+        for i in range(len(named_levels) - 1):
+            named_levels[i]['/T'] = segments[i]
+        named_levels[-1]['/T'] = '.'.join(segments[len(named_levels) - 1:])
+        result = suggested_code
     else:
-        # Segment count doesn't match named level count. Only rename the leaf with
-        # the last segment so the parent hierarchy structure is preserved intact.
-        print(f"[field-updater] [DEBUG]   Segment/level mismatch ({len(segments)} segments, {len(named_levels)} levels) — updating leaf only")
+        # Fewer segments than hierarchy levels: only update the leaf with the last
+        # segment to avoid corrupting shared parent nodes.
+        print(f"[field-updater] [DEBUG]   Fewer segments ({len(segments)}) than levels ({len(named_levels)}) — updating leaf only")
         named_levels[-1]['/T'] = segments[-1]
         result = '.'.join(segments)
 
