@@ -85,12 +85,14 @@ def build_full_field_name(field_ref):
 def normalize_suggested_code(suggested_code):
     """
     Normalize suggested_code to follow ALIS naming convention.
-    Rule: Translate 'button' type to 'check' (buttons are checkboxes)
-    Format: {signer}.{type}.{instance}
+    - Strips any PDF pipe-group suffix (e.g. 'full_name|alis' → 'full_name')
+    - Translates 'button' type to 'check'
     Valid types: signature, date, initial, check, text
     """
+    # Strip pipe-separated group suffix that some PDF tools embed (|anchor_name)
+    normalized = suggested_code.split('|')[0].strip()
     # Convert button to check
-    normalized = suggested_code.replace('.button.', '.check.')
+    normalized = normalized.replace('.button.', '.check.')
     return normalized
 
 
@@ -224,19 +226,18 @@ def process_field_recursive(field_ref, suggestions):
                     print(f"[field-updater] WARNING: suggested_code is None for field {old_name}, skipping")
                     continue
 
-                # Normalize the suggested code (e.g., button -> check)
+                # Normalize the suggested code — strips any pre-existing |pipe suffix, converts button→check
                 new_code = normalize_suggested_code(new_code)
 
-                # Append |anchor_name to encode the signer in the field name (ALIS convention)
+                # Build the hover-text version: clean name + |anchor_name (ALIS tooltip convention only)
                 anchor_name = suggestion.get('anchor_name')
-                if anchor_name:
-                    new_code = f"{new_code}|{anchor_name}"
+                tooltip_code = f"{new_code}|{anchor_name}" if anchor_name else new_code
 
                 signer = suggestion['signer']
                 required = suggestion.get('required', True)
                 read_only = suggestion.get('read_only', False)
 
-                # 1. Update entire hierarchy holistically with suggested_code segments
+                # 1. Write clean field name (NO pipe suffix) into the PDF hierarchy
                 update_hierarchy_holistically(field_ref, new_code)
                 print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
 
@@ -263,10 +264,10 @@ def process_field_recursive(field_ref, suggestions):
                 field_ref['/Ff'] = flags
                 print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
 
-                # 3. Add tooltip (TU field - Tooltip)
-                tooltip = f"[{signer}] {new_code}"
+                # 3. Add tooltip (TU) — uses pipe-suffixed form so ALIS can read the anchor from hover text
+                tooltip = f"[{signer}] {tooltip_code}"
                 field_ref['/TU'] = tooltip
-                print(f"[field-updater] [SUCCESS] Added tooltip")
+                print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
 
                 return 1  # One field updated
 

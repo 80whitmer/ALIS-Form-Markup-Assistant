@@ -141,6 +141,8 @@ function ManualEditMarkup() {
         if (!updated.suggested_code) {
           updated.suggested_code = updated.field_name;
         }
+        // Strip any |pipe suffix from suggested_code loaded from the database
+        updated.suggested_code = cleanFieldName(updated.suggested_code);
 
         // Ensure anchor_name is populated (use signer if available, else extract from field_name)
         if (!updated.anchor_name) {
@@ -683,6 +685,9 @@ function ManualEditMarkup() {
               suggestedCode = s.field_name;
             }
           }
+
+          // Final safety: strip any |pipe suffix before sending to the PDF writer
+          suggestedCode = cleanFieldName(suggestedCode);
 
           return {
             ...s,
