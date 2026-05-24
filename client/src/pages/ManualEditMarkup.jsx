@@ -780,7 +780,7 @@ function ManualEditMarkup() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 px-4 py-8">
       {/* Persistent Progress Bar - Shows while job is processing */}
       {job && job.status === 'analyzing' && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-white border-b-2 border-blue-500 shadow-md">
@@ -1138,17 +1138,17 @@ function ManualEditMarkup() {
         <div className="bg-white rounded-lg shadow-md overflow-hidden">
           <table className="w-full border-collapse table-fixed">
             <colgroup>
-              <col style={{width:'3%'}} />
-              <col style={{width:'13%'}} />
-              <col style={{width:'21%'}} />
-              <col style={{width:'7%'}} />
-              <col style={{width:'11%'}} />
-              <col style={{width:'17%'}} />
-              <col style={{width:'4%'}} />
-              <col style={{width:'4%'}} />
-              <col style={{width:'5%'}} />
-              <col style={{width:'5%'}} />
+              <col style={{width:'2%'}} />
+              <col style={{width:'9%'}} />
+              <col style={{width:'31%'}} />
               <col style={{width:'6%'}} />
+              <col style={{width:'11%'}} />
+              <col style={{width:'16%'}} />
+              <col style={{width:'3%'}} />
+              <col style={{width:'3%'}} />
+              <col style={{width:'5%'}} />
+              <col style={{width:'5%'}} />
+              <col style={{width:'5%'}} />
               <col style={{width:'4%'}} />
             </colgroup>
             <thead className="bg-gray-100 border-b-2 border-gray-300">
