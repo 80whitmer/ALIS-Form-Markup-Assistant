@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Download, ChevronDown, ChevronRight, X } from 'lucide-react';
@@ -48,6 +48,9 @@ function ManualEditMarkup() {
   const [pdfStyleAnchors, setPdfStyleAnchors] = useState(new Set()); // Track PDF-style (invalid) anchors
   const [showPdfStyleOnly, setShowPdfStyleOnly] = useState(false); // Filter for PDF-style anchors only
   const [searchFilter, setSearchFilter] = useState(''); // Free-text field name search
+
+  // Ref for debounced auto-save timer
+  const saveTimeoutRef = useRef(null);
 
   // Strip PDF pipe-separated group suffixes: "full_name|alis" → "full_name"
   const cleanFieldName = (name) => {
@@ -572,6 +575,24 @@ function ManualEditMarkup() {
     return { type: null, instance: null };
   };
 
+  // Debounced auto-save: persists all suggestions to the DB 1.5s after the last edit.
+  // Prevents edits from being lost on page refresh, navigation, or bulk-op server round-trips.
+  const autoSave = useCallback(async (updatedSuggestions) => {
+    if (!jobId) return;
+    setSaveStatus('saving');
+    try {
+      await axios.patch(`/api/jobs/${jobId}/suggestions`, {
+        suggestions: updatedSuggestions
+      });
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch (err) {
+      console.error('[auto-save] Error:', err.message);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(null), 3000);
+    }
+  }, [jobId]);
+
   const updateSuggestion = (suggestion, field, value) => {
     const updated = suggestions.map(s => {
       if (s === suggestion) {
@@ -589,7 +610,8 @@ function ManualEditMarkup() {
           }
         }
 
-        // If field_name is being changed, clean pipe artifacts and recompute suggested_code
+        // If field_name is being changed, clean pipe artifacts and always sync suggested_code.
+        // suggested_code must never be left as null/stale — the apply step uses it to rename.
         if (field === 'field_name') {
           const cleanedValue = cleanFieldName(value);
           updated.field_name = cleanedValue;
@@ -600,7 +622,13 @@ function ManualEditMarkup() {
             const { type, instance } = extractTypeAndInstance(cleanedValue);
             if (type && instance) {
               updated.suggested_code = `${updated.signer}.${type}.${instance}`;
+            } else {
+              // Unrecognised pattern — keep field_name as the target as-is
+              updated.suggested_code = cleanedValue;
             }
+          } else {
+            // No signer set yet — use field_name directly so apply doesn't skip this field
+            updated.suggested_code = cleanedValue;
           }
         }
 
@@ -609,7 +637,11 @@ function ManualEditMarkup() {
       return s;
     });
     setSuggestions(updated);
-    setHasLocalEdits(true); // Mark that there are unsaved edits
+    setHasLocalEdits(true);
+
+    // Debounced auto-save to DB: fires 1.5s after the last edit
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => autoSave(updated), 1500);
   };
 
   // Helper to get field anchor for checks
@@ -691,9 +723,13 @@ function ManualEditMarkup() {
             if (type && instance) {
               suggestedCode = `${s.signer}.${type}.${instance}`;
             } else {
-              // Fallback: just use field_name as-is (no change to field)
               suggestedCode = s.field_name;
             }
+          }
+          // Safety net: if still no suggested_code (no signer, no prior edit that set it),
+          // use field_name directly — the Python applier skips fields with null suggested_code.
+          if (!suggestedCode) {
+            suggestedCode = s.field_name;
           }
 
           // Final safety: strip any |pipe suffix before sending to the PDF writer
@@ -870,7 +906,20 @@ function ManualEditMarkup() {
 
         {/* Filters */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h3 className="text-lg font-semibold text-gray-800 mb-4">Filters</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800">Filters</h3>
+            {saveStatus && (
+              <span className={`text-xs font-medium px-2 py-1 rounded ${
+                saveStatus === 'saving' ? 'bg-blue-100 text-blue-700' :
+                saveStatus === 'saved'  ? 'bg-green-100 text-green-700' :
+                                          'bg-red-100 text-red-700'
+              }`}>
+                {saveStatus === 'saving' && '💾 Auto-saving…'}
+                {saveStatus === 'saved'  && '✓ Changes saved'}
+                {saveStatus === 'error'  && '✗ Save failed'}
+              </span>
+            )}
+          </div>
 
           {/* Search box — full width row */}
           <div className="mb-4">
