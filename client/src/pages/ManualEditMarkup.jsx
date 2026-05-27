@@ -47,6 +47,7 @@ function ManualEditMarkup() {
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false); // Filter for duplicates only
   const [pdfStyleAnchors, setPdfStyleAnchors] = useState(new Set()); // Track PDF-style (invalid) anchors
   const [showPdfStyleOnly, setShowPdfStyleOnly] = useState(false); // Filter for PDF-style anchors only
+  const [searchFilter, setSearchFilter] = useState(''); // Free-text field name search
 
   // Strip PDF pipe-separated group suffixes: "full_name|alis" → "full_name"
   const cleanFieldName = (name) => {
@@ -625,6 +626,15 @@ function ManualEditMarkup() {
       if (fieldNameAnchor.toLowerCase() !== signerFilter.toLowerCase()) return false;
     }
 
+    // Free-text search across field_name, original_field_name, and suggested_code
+    if (searchFilter) {
+      const q = searchFilter.toLowerCase();
+      const matchesFieldName = (s.field_name || '').toLowerCase().includes(q);
+      const matchesOriginal = (s.original_field_name || '').toLowerCase().includes(q);
+      const matchesSuggested = (s.suggested_code || '').toLowerCase().includes(q);
+      if (!matchesFieldName && !matchesOriginal && !matchesSuggested) return false;
+    }
+
     // Filter for duplicate field names only
     if (showDuplicatesOnly && !duplicateFieldNames.has(s.field_name)) {
       return false;
@@ -861,6 +871,30 @@ function ManualEditMarkup() {
         {/* Filters */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h3 className="text-lg font-semibold text-gray-800 mb-4">Filters</h3>
+
+          {/* Search box — full width row */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Search Field Name</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+                placeholder="e.g. responsible_party.text.full_name"
+                className="w-full px-3 py-2 pr-8 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+              {searchFilter && (
+                <button
+                  onClick={() => setSearchFilter('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Page</label>

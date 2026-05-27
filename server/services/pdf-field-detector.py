@@ -120,15 +120,43 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
 
         # Check for widget annotations to get position
         if '/Kids' in field_ref:
-            # Field group - process children recursively
             kids = field_ref['/Kids']
+            kid_objs = []
             for kid in kids:
                 if isinstance(kid, pikepdf.Object):
-                    kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
+                    kid_objs.append(kid.get_object() if hasattr(kid, 'get_object') else kid)
+
+            # Distinguish between:
+            #   (a) field GROUP: kids have /T (child fields) → recurse
+            #   (b) terminal field with widget annotations: kids have no /T → add this field
+            has_field_children = any('/T' in k for k in kid_objs)
+
+            if has_field_children:
+                # Field group - process child fields recursively
+                for kid_obj in kid_objs:
                     field_index = process_field_recursive(kid_obj, field_index, fields, page_map)
-            return field_index
+                return field_index
+            else:
+                # Terminal field whose /Kids are widget annotations.
+                # Extract position and page from the widget kids.
+                for kid_obj in kid_objs:
+                    if '/Rect' in kid_obj:
+                        rect = kid_obj['/Rect']
+                        x = float(rect[0])
+                        y = float(rect[1])
+                        width = float(rect[2]) - float(rect[0])
+                        height = float(rect[3]) - float(rect[1])
+                        break
+
+                for kid_obj in kid_objs:
+                    try:
+                        if hasattr(kid_obj, 'objgen') and kid_obj.objgen[0] in page_map:
+                            field_page = page_map[kid_obj.objgen[0]]
+                            break
+                    except:
+                        pass
         else:
-            # Leaf field - extract position
+            # Leaf field (no /Kids) - extract position directly from field dict
             if '/Rect' in field_ref:
                 rect = field_ref['/Rect']
                 x = float(rect[0])
@@ -136,14 +164,14 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
                 width = float(rect[2]) - float(rect[0])
                 height = float(rect[3]) - float(rect[1])
 
-        # Try to determine page from page map
-        try:
-            if hasattr(field_ref, 'objgen'):
-                obj_id = field_ref.objgen[0]
-                if obj_id in page_map:
-                    field_page = page_map[obj_id]
-        except:
-            pass
+            # Try to determine page from page map
+            try:
+                if hasattr(field_ref, 'objgen'):
+                    obj_id = field_ref.objgen[0]
+                    if obj_id in page_map:
+                        field_page = page_map[obj_id]
+            except:
+                pass
 
         fields.append({
             'field_name': field_name,

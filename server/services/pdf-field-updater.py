@@ -208,13 +208,19 @@ def process_field_recursive(field_ref, suggestions):
     updated_count = 0
 
     try:
-        # If this is a field group with children, process them recursively
+        # If this has /Kids, determine whether they are child FIELDS or widget ANNOTATIONS.
+        # Child fields have /T; widget annotations do not.
         if '/Kids' in field_ref:
             kids = field_ref['/Kids']
-            for kid in kids:
-                kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
-                updated_count += process_field_recursive(kid_obj, suggestions)
-            return updated_count
+            kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+
+            if any('/T' in k for k in kid_objs):
+                # Field group — recurse into child fields
+                for kid_obj in kid_objs:
+                    updated_count += process_field_recursive(kid_obj, suggestions)
+                return updated_count
+            # else: /Kids are widget annotations → fall through and process this
+            # node as a terminal field (rename its /T value, set flags, etc.)
 
         # If this is a leaf field, check if it has a name
         if '/T' not in field_ref:
