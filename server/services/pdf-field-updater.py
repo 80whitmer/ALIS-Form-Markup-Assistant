@@ -96,13 +96,76 @@ def normalize_suggested_code(suggested_code):
     return normalized
 
 
-def update_hierarchy_holistically(field_ref, suggested_code):
+def detach_field_from_parent(field_ref, acroform):
     """
-    Completely replace the entire field hierarchy with suggested_code segments.
-    Walks the full parent chain, identifies all named levels, and overwrites them completely.
+    Remove a field from its current parent hierarchy and re-add it as a
+    root-level flat field in AcroForm /Fields.
 
-    Example: If hierarchy is [AcroForm, alis, resident, full_name] and suggested_code is 'resident.text.4'
-    Result: alis='resident', resident='text', full_name='4' -> 'resident.text.4'
+    This is called when a rename requires changing a shared parent node that
+    has multiple named children. Modifying such a shared parent would corrupt
+    sibling fields — detaching avoids touching any shared node.
+
+    After this call, set field_ref['/T'] = full_dotted_name.
+    """
+    if '/Parent' not in field_ref:
+        # Already root-level — nothing to detach
+        return
+
+    parent_proxy = field_ref['/Parent']
+    parent = parent_proxy.get_object() if hasattr(parent_proxy, 'get_object') else parent_proxy
+
+    if '/Kids' in parent:
+        original_kids = list(parent['/Kids'])
+        new_kids = []
+        removed = False
+
+        for kid_ref in original_kids:
+            kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+
+            is_target = False
+            if not removed:
+                # Strategy 1: Python object identity (works when pikepdf caches resolved objects)
+                if kid is field_ref:
+                    is_target = True
+                # Strategy 2: pikepdf object number comparison (objgen tuple)
+                elif hasattr(kid, 'objgen') and hasattr(field_ref, 'objgen'):
+                    if kid.objgen == field_ref.objgen:
+                        is_target = True
+
+            if is_target and not removed:
+                removed = True
+                continue  # exclude this kid → effectively removes it
+            new_kids.append(kid_ref)
+
+        if removed:
+            parent['/Kids'] = pikepdf.Array(new_kids)
+            print(f"[field-updater] [DEBUG]   Removed from parent /Kids, parent now has {len(new_kids)} named kids")
+        else:
+            print(f"[field-updater] [DEBUG]   WARNING: Could not locate field in parent /Kids for detach")
+
+    # Sever the upward link
+    del field_ref['/Parent']
+
+    # Re-add as a root-level AcroForm field
+    acroform['/Fields'].append(field_ref)
+    print(f"[field-updater] [DEBUG]   Re-attached as root-level AcroForm field")
+
+
+def update_hierarchy_holistically(field_ref, acroform, suggested_code):
+    """
+    Rename a field to suggested_code by updating the PDF hierarchy.
+
+    Strategy
+    --------
+    1. Flat field (1 named level, N segments): write the full dotted name into that one /T.
+    2. Exact count match AND no shared-parent conflict: distribute segments one-per-level.
+    3. Exact count match BUT a non-leaf level is SHARED (has multiple named children) AND
+       needs a different value: DETACH the field from its parent hierarchy (removing it from
+       the shared parent's /Kids and re-adding it to the root AcroForm /Fields), then set
+       /T = suggested_code as a flat dotted name. This prevents sibling fields from being
+       corrupted by a shared-parent rename.
+    4. More segments than levels: distribute first (N-1) segments, pack remaining into leaf.
+    5. Fewer segments than levels: update leaf only (safe — never touches shared parents).
     """
     if suggested_code is None:
         print(f"[field-updater] WARNING: suggested_code is None, skipping hierarchy update")
@@ -124,80 +187,76 @@ def update_hierarchy_holistically(field_ref, suggested_code):
         else:
             current = None
 
-    # Find all named levels (levels that have /T field)
+    # Find all named levels (nodes that have /T)
     named_levels = []
-    named_indices = []
-    for idx, level in enumerate(hierarchy):
-        if '/T' in level:
-            level_name = level['/T']
-            if level_name is not None:
-                named_levels.append(level)
-                named_indices.append(idx)
+    for level in hierarchy:
+        if '/T' in level and level['/T'] is not None:
+            named_levels.append(level)
 
-    # DEBUG: Log before update
+    # DEBUG: log before update
     old_names = []
     for level in named_levels:
         try:
-            name_obj = level['/T']
-            if name_obj is not None:
-                name = str(name_obj).replace('"', '').replace("'", '')
-                old_names.append(name)
-            else:
-                old_names.append('(None)')
+            n = str(level['/T']).replace('"', '').replace("'", '')
+            old_names.append(n)
         except:
             old_names.append('(error)')
 
-    print(f"[field-updater] [DEBUG] Completely replacing hierarchy for '{suggested_code}':")
+    print(f"[field-updater] [DEBUG] Replacing hierarchy for '{suggested_code}':")
     print(f"[field-updater] [DEBUG]   Old structure: {' -> '.join(old_names)}")
     print(f"[field-updater] [DEBUG]   New segments:  {' -> '.join(segments)}")
     print(f"[field-updater] [DEBUG]   Named levels: {len(named_levels)}, Segments: {len(segments)}")
 
-    # STRATEGY:
-    # 1) Flat field (1 named level, multiple segments): assign full dot-joined string to that level.
-    # 2) Exact match (named levels == segments): distribute one segment per level.
-    # 3) Mismatch: only update the leaf (last named level) with the last segment so parent
-    #    nodes — which may contain dots in their own /T value — are never corrupted.
+    # ── Strategy 1: flat field ────────────────────────────────────────────────
     if len(named_levels) == 1 and len(segments) > 1:
-        full_name = '.'.join(segments)
-        named_levels[0]['/T'] = full_name
-        result = full_name
-    elif len(named_levels) == len(segments):
+        named_levels[0]['/T'] = '.'.join(segments)
+        print(f"[field-updater] [DEBUG]   Strategy: flat field, full name in /T")
+        return
+
+    # ── Strategy 2 / 3: exact level count ────────────────────────────────────
+    if len(named_levels) == len(segments):
+        # Check non-leaf levels for shared-parent conflicts
+        needs_detach = False
+        for i, level in enumerate(named_levels[:-1]):  # skip leaf (last)
+            current_val = str(level['/T']).replace('"', '').replace("'", '') if level['/T'] is not None else ''
+            desired_val = segments[i]
+            if current_val != desired_val:
+                # This parent needs a different value — is it shared?
+                if '/Kids' in level:
+                    kids_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in level['/Kids']]
+                    named_kids_count = sum(1 for k in kids_objs if '/T' in k)
+                    if named_kids_count > 1:
+                        needs_detach = True
+                        print(f"[field-updater] [DEBUG]   Level {i} ('{current_val}' needs to become '{desired_val}') "
+                              f"is shared by {named_kids_count} named children - detaching field instead")
+                        break
+
+        if needs_detach:
+            # Strategy 3: detach from shared hierarchy, flatten at root
+            detach_field_from_parent(field_ref, acroform)
+            field_ref['/T'] = suggested_code
+            print(f"[field-updater] [DEBUG]   Strategy: detach+flatten, /T='{suggested_code}'")
+            return
+
+        # Strategy 2: no conflicts — distribute one segment per level
         for i, level in enumerate(named_levels):
             level['/T'] = segments[i]
-        new_names = []
-        for level in named_levels:
-            try:
-                name_obj = level['/T']
-                if name_obj is not None:
-                    new_names.append(str(name_obj).replace('"', '').replace("'", ''))
-                else:
-                    new_names.append('(None)')
-            except:
-                new_names.append('(error)')
-        result = '.'.join(new_names)
-    elif len(segments) > len(named_levels):
-        # More segments than hierarchy levels.
-        # Distribute the first (N-1) segments one-per-level, then pack all remaining
-        # segments (dot-joined) into the leaf so the full path reads as the complete
-        # suggested_code.
-        # Example: 3 levels [alis, associated_contact, person_full_name],
-        #          5 segments [alis, associated_contact, power_of_attorney, 1, person_full_name]
-        #   → level[0]='alis', level[1]='associated_contact',
-        #     level[2]='power_of_attorney.1.person_full_name'
-        #   → full path: alis.associated_contact.power_of_attorney.1.person_full_name ✓
-        print(f"[field-updater] [DEBUG]   More segments ({len(segments)}) than levels ({len(named_levels)}) — distributing, packing tail into leaf")
+        print(f"[field-updater] [DEBUG]   Strategy: exact match, distributed segments")
+        return
+
+    # ── Strategy 4: more segments than levels ────────────────────────────────
+    if len(segments) > len(named_levels):
+        print(f"[field-updater] [DEBUG]   Strategy: more segments ({len(segments)}) than levels "
+              f"({len(named_levels)}), packing tail into leaf")
         for i in range(len(named_levels) - 1):
             named_levels[i]['/T'] = segments[i]
         named_levels[-1]['/T'] = '.'.join(segments[len(named_levels) - 1:])
-        result = suggested_code
-    else:
-        # Fewer segments than hierarchy levels: only update the leaf with the last
-        # segment to avoid corrupting shared parent nodes.
-        print(f"[field-updater] [DEBUG]   Fewer segments ({len(segments)}) than levels ({len(named_levels)}) — updating leaf only")
-        named_levels[-1]['/T'] = segments[-1]
-        result = '.'.join(segments)
+        return
 
-    print(f"[field-updater] [DEBUG]   Result: {result}")
+    # ── Strategy 5: fewer segments than levels — leaf only ───────────────────
+    print(f"[field-updater] [DEBUG]   Strategy: fewer segments ({len(segments)}) than levels "
+          f"({len(named_levels)}), updating leaf only")
+    named_levels[-1]['/T'] = segments[-1]
 
 
 def collect_all_fields(field_ref, result=None):
@@ -237,9 +296,10 @@ def collect_all_fields(field_ref, result=None):
     return result
 
 
-def apply_single_field_update(field_ref, suggestion):
+def apply_single_field_update(field_ref, suggestion, acroform):
     """
     PASS 2: Apply suggestion (rename, flags, tooltip) to a single pre-matched field_ref.
+    acroform is the PDF AcroForm dictionary, needed for detach-and-flatten renames.
     Returns 1 if the field was successfully processed, 0 on error.
     """
     try:
@@ -270,7 +330,7 @@ def apply_single_field_update(field_ref, suggestion):
 
         # 1. Write clean field name (NO pipe suffix) into the PDF hierarchy
         if name_changed:
-            update_hierarchy_holistically(field_ref, new_code)
+            update_hierarchy_holistically(field_ref, acroform, new_code)
             print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
         else:
             print(f"[field-updater] [SKIP rename] {old_name} (name unchanged)")
@@ -381,7 +441,7 @@ def update_fields(pdf_path, suggestions, output_path):
                     suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
                     if field_name == suggestion_field_name:
                         matched = True
-                        updated_count += apply_single_field_update(field_ref, suggestion)
+                        updated_count += apply_single_field_update(field_ref, suggestion, acroform)
                         break  # each PDF field matches at most one suggestion
 
                 if not matched:
@@ -418,27 +478,27 @@ def main():
                 suggestions = json.load(f)
             print(f"[field-updater] Loaded {len(suggestions)} suggestions from file")
         except FileNotFoundError:
-            print(f"[field-updater] ❌ ERROR: Suggestions file not found: {args.suggestions_file}")
+            print(f"[field-updater] ERROR: Suggestions file not found: {args.suggestions_file}")
             sys.exit(1)
         except json.JSONDecodeError as e:
-            print(f"[field-updater] ❌ ERROR: Invalid JSON in suggestions file: {e}")
+            print(f"[field-updater] ERROR: Invalid JSON in suggestions file: {e}")
             sys.exit(1)
     elif args.suggestions:
         # Fallback to command-line JSON string (legacy method)
         try:
             suggestions = json.loads(args.suggestions)
         except json.JSONDecodeError as e:
-            print(f"[field-updater] ❌ ERROR: Invalid JSON in suggestions: {e}")
+            print(f"[field-updater] ERROR: Invalid JSON in suggestions: {e}")
             sys.exit(1)
 
     if not suggestions:
-        print("[field-updater] ⚠️ WARNING: No suggestions provided")
+        print("[field-updater] WARNING: No suggestions provided")
 
     # Update fields
     updated = update_fields(args.input_pdf, suggestions, args.output_pdf)
 
     if updated < 0:
-        print("[field-updater] ❌ Field update failed with exception")
+        print("[field-updater] Field update failed with exception")
         sys.exit(1)
     elif updated > 0:
         print(f"[field-updater] Successfully updated {updated} field(s)")
