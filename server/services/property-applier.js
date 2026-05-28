@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { PDFDocument } = require('pdf-lib');
 
 /**
  * Apply field updates using pikepdf (Python post-processor)
@@ -191,9 +190,8 @@ async function applyBorderStyling(pdfPath, fieldTypes = ['text', 'signature']) {
  * Apply reviewed and approved suggestions to a PDF document
  *
  * This function:
- * 1. Loads the PDF with pdf-lib (to validate structure)
- * 2. Saves it unchanged to output path
- * 3. Post-processes with Python/pikepdf for all field updates:
+ * 1. Copies input PDF directly to output path (no pdf-lib round-trip)
+ * 2. Post-processes with Python/pikepdf for all field updates:
  *    - Updates field names to ALIS format (code|anchor) [skipped for manual edit]
  *    - Sets required flag
  *    - Sets read-only flag
@@ -210,15 +208,15 @@ async function applyChangesToPDF(inputPath, suggestions, outputPath, isManualEdi
   try {
     console.log(`[applier] Loading PDF from ${inputPath}`);
 
-    // Load original PDF with pdf-lib (just to validate it's a valid PDF)
-    const pdfBytes = fs.readFileSync(inputPath);
-    const pdfDoc = await PDFDocument.load(pdfBytes);
+    // Validate the PDF exists and is readable
+    if (!fs.existsSync(inputPath)) {
+      throw new Error(`Input PDF not found: ${inputPath}`);
+    }
 
-    // Get AcroForm info (just for logging)
-    const form = pdfDoc.getForm();
-    const allFields = form.getFields();
-
-    console.log(`[applier] Found ${allFields.length} fields in PDF`);
+    // Count fields for logging (use pikepdf via Python rather than pdf-lib to avoid
+    // pdf-lib's save() potentially re-encoding the AcroForm hierarchy in ways that
+    // break pikepdf's field-name matching in the post-processing step).
+    console.log(`[applier] Validated PDF exists: ${inputPath}`);
 
     // Filter for approved suggestions only
     const approvedSuggestions = suggestions.filter(s => s.approval_status === 'approved');
@@ -228,22 +226,29 @@ async function applyChangesToPDF(inputPath, suggestions, outputPath, isManualEdi
     let auditLog = [];
 
     for (const suggestion of approvedSuggestions) {
+      // Strip any legacy pipe suffix from suggested_code before building the audit entry.
+      // Python now writes the tooltip as "[signer] code|code" so the audit log should match.
+      const cleanCode = (suggestion.suggested_code || suggestion.field_name || '').split('|')[0].trim();
       auditLog.push({
         status: 'pending',
-        originalName: suggestion.field_name,
-        newName: `${suggestion.suggested_code}|${suggestion.anchor_name}`,
+        // original_field_name is the immutable PDF field name; fall back to field_name
+        originalName: suggestion.original_field_name || suggestion.field_name,
+        // newName reflects what Python writes: field code + self-referential pipe anchor
+        newName: `${cleanCode}|${cleanCode}`,
         signer: suggestion.signer,
         required: suggestion.required,
         readOnly: suggestion.read_only
       });
     }
 
-    // Save PDF (unchanged by pdf-lib, just validates structure)
-    console.log(`[applier] Saving PDF to ${outputPath}`);
-    const pdfBytesOut = await pdfDoc.save();
-    fs.writeFileSync(outputPath, pdfBytesOut);
+    // Copy input PDF directly to output — do NOT use pdf-lib to save it.
+    // pdf-lib's pdfDoc.save() re-encodes the AcroForm structure (flattens hierarchies,
+    // re-assigns object IDs) which causes pikepdf's field-name matching to fail,
+    // meaning edits made in the table don't appear in the applied PDF.
+    console.log(`[applier] Copying PDF to ${outputPath}`);
+    fs.copyFileSync(inputPath, outputPath);
 
-    console.log(`[applier] ✓ PDF saved. Ready for post-processing...`);
+    console.log(`[applier] ✓ PDF copied. Ready for post-processing...`);
 
     // Post-process: Apply ALL field updates (rename, required, read-only, tooltips) via Python/pikepdf
     console.log(`[applier] Running post-processing: field updates...`);

@@ -83,8 +83,29 @@ function runMigrations(database) {
         console.log('Running migration: Adding original_field_name column to suggestions table');
         database.run("ALTER TABLE suggestions ADD COLUMN original_field_name TEXT", (err) => {
           if (err) console.warn('Migration failed:', err.message);
-          else console.log('✓ Migration: original_field_name column added');
+          else {
+            console.log('✓ Migration: original_field_name column added');
+            // Backfill: for existing rows, use field_name as the original name.
+            // This is the best approximation for rows created before this column existed.
+            database.run(
+              "UPDATE suggestions SET original_field_name = field_name WHERE original_field_name IS NULL",
+              (err2) => {
+                if (err2) console.warn('Migration backfill failed:', err2.message);
+                else console.log('✓ Migration: original_field_name backfilled from field_name');
+              }
+            );
+          }
         });
+      } else {
+        // Column already exists — backfill any remaining NULL rows (e.g. suggestions inserted
+        // before the column was populated, or rows that slipped through).
+        database.run(
+          "UPDATE suggestions SET original_field_name = field_name WHERE original_field_name IS NULL",
+          function(err) {
+            if (err) console.warn('original_field_name backfill failed:', err.message);
+            else if (this.changes > 0) console.log(`✓ Backfilled original_field_name for ${this.changes} suggestion(s)`);
+          }
+        );
       }
     });
 

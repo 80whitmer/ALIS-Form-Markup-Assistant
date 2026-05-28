@@ -754,37 +754,19 @@ function ManualEditMarkup() {
     try {
       const response = await axios.post(`/api/jobs/${jobId}/apply`, {
         suggestions: suggestions.map(s => {
-          // Compute suggested_code if not already set
-          let suggestedCode = s.suggested_code;
-          if (!suggestedCode && s.signer) {
-            // Field hasn't been edited yet - compute ALIS code from signer + field name.
-            // If field_name already starts with the signer, use it directly — don't rebuild,
-            // as reconstruction can produce double segments (e.g. responsible_party.text.text.2).
-            const cleanName = cleanFieldName(s.field_name);
-            if (cleanName.toLowerCase().startsWith(s.signer.toLowerCase() + '.')) {
-              suggestedCode = cleanName;
-            } else {
-              const { type, instance } = extractTypeAndInstance(cleanName);
-              if (type && instance) {
-                suggestedCode = `${s.signer}.${type}.${instance}`;
-              } else {
-                suggestedCode = s.field_name;
-              }
-            }
-          }
-          // Safety net: if still no suggested_code (no signer, no prior edit that set it),
-          // use field_name directly — the Python applier skips fields with null suggested_code.
-          if (!suggestedCode) {
-            suggestedCode = s.field_name;
-          }
-
-          // Final safety: strip any |pipe suffix before sending to the PDF writer
-          suggestedCode = cleanFieldName(suggestedCode);
+          // The rename target is ALWAYS field_name — exactly what the user sees and edits
+          // in the table. We do NOT use suggested_code here because it can diverge from
+          // field_name via stale bulk-signer operations or prior apply cycles, causing
+          // the user's visible edits to be silently ignored.
+          const suggestedCode = cleanFieldName(s.field_name);
 
           return {
             ...s,
             approval_status: 'approved',
             suggested_code: suggestedCode,
+            // original_field_name is the immutable PDF field name Python uses for lookup.
+            // If it's null (old job), fall back to field_name — Python will match by it.
+            original_field_name: s.original_field_name || s.field_name,
             anchor_name: s.anchor_name || getFieldAnchor(s.field_name).toLowerCase()
           };
         })

@@ -230,6 +230,7 @@ def process_field_recursive(field_ref, suggestions):
         field_name = build_full_field_name(field_ref)
 
         # Check if this field matches any suggestion
+        matched = False
         for suggestion in suggestions:
             if suggestion.get('approval_status') != 'approved':
                 continue
@@ -239,38 +240,44 @@ def process_field_recursive(field_ref, suggestions):
             suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
 
             if field_name == suggestion_field_name:
+                matched = True
                 old_name = suggestion_field_name  # Use the original field name for logging
                 new_code = suggestion.get('suggested_code')
 
-                # Validate new_code is not None
-                if new_code is None:
-                    print(f"[field-updater] WARNING: suggested_code is None for field {old_name}, skipping")
+                # Validate new_code is not None or empty
+                if not new_code:
+                    print(f"[field-updater] WARNING: suggested_code is empty for field {old_name}, skipping")
                     continue
 
                 # Normalize the suggested code — strips any pre-existing |pipe suffix, converts button→check
                 new_code = normalize_suggested_code(new_code)
 
-                # Build the hover-text version:
-                #   "[signer] new_code|new_code"
-                # The pipe-suffixed form uses the full field code as the anchor so ALIS
-                # can read the exact field name from the hover text.
-                # Previously anchor_name was just the signer prefix (e.g. "alis"), which
-                # produced a truncated "|alis" suffix instead of "|alis.resident.full_name".
-                signer = suggestion['signer']
-                tooltip_code = f"{new_code}|{new_code}"
-                tooltip = f"[{signer}] {tooltip_code}"
+                # If the name isn't changing, we still apply flags/tooltip — but skip the
+                # rename step to avoid needlessly dirtying the PDF hierarchy.
+                name_changed = (new_code != old_name)
 
-                required = suggestion.get('required', True)
+                # Build the hover-text tooltip if a signer is provided.
+                # Guard against None signer (fields the user left without a signer assignment).
+                signer = suggestion.get('signer')
+                if signer:
+                    tooltip_code = f"{new_code}|{new_code}"
+                    tooltip = f"[{signer}] {tooltip_code}"
+                else:
+                    tooltip = None
+
+                required = suggestion.get('required', False)
                 read_only = suggestion.get('read_only', False)
 
                 # 1. Write clean field name (NO pipe suffix) into the PDF hierarchy
-                update_hierarchy_holistically(field_ref, new_code)
-                print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
+                if name_changed:
+                    update_hierarchy_holistically(field_ref, new_code)
+                    print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
+                else:
+                    print(f"[field-updater] [SKIP rename] {old_name} (name unchanged)")
 
-                # 2. Set required flag (Ff field flags)
+                # 2. Set required/read_only flags (Ff field flags)
                 # Bit 0 (0x1) = ReadOnly
                 # Bit 1 (0x2) = Required
-                # Bit 2 (0x4) = NoExport
                 flags = field_ref['/Ff'] if '/Ff' in field_ref else 0
                 if isinstance(flags, pikepdf.Object):
                     flags = int(flags)
@@ -291,20 +298,25 @@ def process_field_recursive(field_ref, suggestions):
                 print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
 
                 # 3. Add tooltip (TU) to the field node AND any widget annotation kids.
+                # Only set if signer is provided — avoids writing "[None] ..." on unsignable fields.
                 # PDF viewers (e.g. Acrobat) read /TU from the widget annotation, not the
                 # parent field node, so setting it only on field_ref leaves the visible
                 # hover text unchanged for multi-widget fields.
-                field_ref['/TU'] = tooltip
-                if '/Kids' in field_ref:
-                    kids = field_ref['/Kids']
-                    kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
-                    # Only update kids that are widget annotations (no /T), not child fields
-                    for kid_obj in kid_objs:
-                        if '/T' not in kid_obj:
-                            kid_obj['/TU'] = tooltip
-                print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
+                if tooltip:
+                    field_ref['/TU'] = tooltip
+                    if '/Kids' in field_ref:
+                        kids = field_ref['/Kids']
+                        kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+                        # Only update kids that are widget annotations (no /T), not child fields
+                        for kid_obj in kid_objs:
+                            if '/T' not in kid_obj:
+                                kid_obj['/TU'] = tooltip
+                    print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
 
                 return 1  # One field updated
+
+        if not matched:
+            print(f"[field-updater] [NO MATCH] PDF field '{field_name}' did not match any suggestion")
 
         return 0  # No match found
 
