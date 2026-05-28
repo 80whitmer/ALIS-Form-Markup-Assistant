@@ -250,11 +250,16 @@ def process_field_recursive(field_ref, suggestions):
                 # Normalize the suggested code — strips any pre-existing |pipe suffix, converts button→check
                 new_code = normalize_suggested_code(new_code)
 
-                # Build the hover-text version: clean name + |anchor_name (ALIS tooltip convention only)
-                anchor_name = suggestion.get('anchor_name')
-                tooltip_code = f"{new_code}|{anchor_name}" if anchor_name else new_code
-
+                # Build the hover-text version:
+                #   "[signer] new_code|new_code"
+                # The pipe-suffixed form uses the full field code as the anchor so ALIS
+                # can read the exact field name from the hover text.
+                # Previously anchor_name was just the signer prefix (e.g. "alis"), which
+                # produced a truncated "|alis" suffix instead of "|alis.resident.full_name".
                 signer = suggestion['signer']
+                tooltip_code = f"{new_code}|{new_code}"
+                tooltip = f"[{signer}] {tooltip_code}"
+
                 required = suggestion.get('required', True)
                 read_only = suggestion.get('read_only', False)
 
@@ -285,9 +290,18 @@ def process_field_recursive(field_ref, suggestions):
                 field_ref['/Ff'] = flags
                 print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
 
-                # 3. Add tooltip (TU) — uses pipe-suffixed form so ALIS can read the anchor from hover text
-                tooltip = f"[{signer}] {tooltip_code}"
+                # 3. Add tooltip (TU) to the field node AND any widget annotation kids.
+                # PDF viewers (e.g. Acrobat) read /TU from the widget annotation, not the
+                # parent field node, so setting it only on field_ref leaves the visible
+                # hover text unchanged for multi-widget fields.
                 field_ref['/TU'] = tooltip
+                if '/Kids' in field_ref:
+                    kids = field_ref['/Kids']
+                    kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+                    # Only update kids that are widget annotations (no /T), not child fields
+                    for kid_obj in kid_objs:
+                        if '/T' not in kid_obj:
+                            kid_obj['/TU'] = tooltip
                 print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
 
                 return 1  # One field updated

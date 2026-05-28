@@ -459,10 +459,17 @@ function ManualEditMarkup() {
 
         const cleanedName = cleanFieldName(s.field_name);
         if (isExtractedAnchor && !cleanedName?.startsWith('alis.')) {
-          // Build suggested_code from new signer + original field's type and instance
-          const { type, instance } = extractTypeAndInstance(cleanedName);
-          if (type && instance) {
-            newSuggestedCode = `${bulkSignerValue}.${type}.${instance}`;
+          // If field_name already starts with the new signer, use it as-is.
+          // Rebuilding via extractTypeAndInstance can produce double segments
+          // (e.g. responsible_party.text.text.2 from responsible_party.text.2).
+          if (cleanedName.toLowerCase().startsWith(bulkSignerValue.toLowerCase() + '.')) {
+            newSuggestedCode = cleanedName;
+          } else {
+            // Build suggested_code from new signer + original field's type and instance
+            const { type, instance } = extractTypeAndInstance(cleanedName);
+            if (type && instance) {
+              newSuggestedCode = `${bulkSignerValue}.${type}.${instance}`;
+            }
           }
         }
         // alis.entity.* fields: suggested_code stays as-is (don't reconstruct)
@@ -540,13 +547,31 @@ function ManualEditMarkup() {
   const extractTypeAndInstance = (fieldName) => {
     if (!fieldName) return { type: null, instance: null };
 
+    const KNOWN_TYPES = new Set(['text', 'signature', 'check', 'date', 'initial', 'image', 'button']);
     const dotParts = fieldName.split('.');
 
-    // Case 1: Dot-separated ALIS format (resident.text.2)
+    // Case 1: Dot-separated ALIS/anchor format.
+    // Scan for the FIRST segment that is a recognised field type.
+    // This handles both short (anchor.type.instance) and longer
+    // (alis.entity.type.instance) hierarchies without mis-classifying
+    // intermediate segments as the type.
     if (dotParts.length >= 2) {
-      const fieldType = dotParts[1]; // text, check, signature, etc.
-      const fieldInstance = dotParts.slice(2).join('.'); // Everything after type
-      return { type: fieldType, instance: fieldInstance };
+      for (let i = 0; i < dotParts.length - 1; i++) {
+        if (KNOWN_TYPES.has(dotParts[i].toLowerCase())) {
+          const instance = dotParts.slice(i + 1).join('.');
+          if (instance) {
+            return { type: dotParts[i].toLowerCase(), instance };
+          }
+        }
+      }
+      // No known type keyword found — treat last segment as instance, second-to-last as type
+      if (dotParts.length >= 2) {
+        const instance = dotParts[dotParts.length - 1];
+        const type = dotParts[dotParts.length - 2];
+        if (/^\d+$/.test(instance)) {
+          return { type, instance };
+        }
+      }
     }
 
     // Case 2: PDF-style field names (CheckBox14, TextField1, Signature_1, etc.)
@@ -603,9 +628,17 @@ function ManualEditMarkup() {
           updated.anchor_name = value.toLowerCase();
           // alis.entity.* fields keep their own naming — don't reconstruct as anchor.type.instance
           if (!isAlisDataField(updated.field_name)) {
-            const { type, instance } = extractTypeAndInstance(cleanFieldName(updated.field_name));
-            if (type && instance) {
-              updated.suggested_code = `${value}.${type}.${instance}`;
+            const cleanName = cleanFieldName(updated.field_name);
+            // If field_name already starts with the new signer, use it as-is.
+            // Rebuilding via extractTypeAndInstance on an already-namespaced name
+            // causes segment duplication (e.g. responsible_party.text.text.2).
+            if (cleanName.toLowerCase().startsWith(value.toLowerCase() + '.')) {
+              updated.suggested_code = cleanName;
+            } else {
+              const { type, instance } = extractTypeAndInstance(cleanName);
+              if (type && instance) {
+                updated.suggested_code = `${value}.${type}.${instance}`;
+              }
             }
           }
         }
@@ -619,12 +652,18 @@ function ManualEditMarkup() {
             // alis data fields: suggested_code mirrors the field name directly
             updated.suggested_code = cleanedValue;
           } else if (updated.signer) {
-            const { type, instance } = extractTypeAndInstance(cleanedValue);
-            if (type && instance) {
-              updated.suggested_code = `${updated.signer}.${type}.${instance}`;
-            } else {
-              // Unrecognised pattern — keep field_name as the target as-is
+            // If field_name already starts with the signer, use it directly — no reconstruction needed.
+            // Reconstructing from extractTypeAndInstance can produce double segments.
+            if (cleanedValue.toLowerCase().startsWith(updated.signer.toLowerCase() + '.')) {
               updated.suggested_code = cleanedValue;
+            } else {
+              const { type, instance } = extractTypeAndInstance(cleanedValue);
+              if (type && instance) {
+                updated.suggested_code = `${updated.signer}.${type}.${instance}`;
+              } else {
+                // Unrecognised pattern — keep field_name as the target as-is
+                updated.suggested_code = cleanedValue;
+              }
             }
           } else {
             // No signer set yet — use field_name directly so apply doesn't skip this field
@@ -718,12 +757,19 @@ function ManualEditMarkup() {
           // Compute suggested_code if not already set
           let suggestedCode = s.suggested_code;
           if (!suggestedCode && s.signer) {
-            // Field hasn't been edited yet - compute ALIS code from signer + field name
-            const { type, instance } = extractTypeAndInstance(s.field_name);
-            if (type && instance) {
-              suggestedCode = `${s.signer}.${type}.${instance}`;
+            // Field hasn't been edited yet - compute ALIS code from signer + field name.
+            // If field_name already starts with the signer, use it directly — don't rebuild,
+            // as reconstruction can produce double segments (e.g. responsible_party.text.text.2).
+            const cleanName = cleanFieldName(s.field_name);
+            if (cleanName.toLowerCase().startsWith(s.signer.toLowerCase() + '.')) {
+              suggestedCode = cleanName;
             } else {
-              suggestedCode = s.field_name;
+              const { type, instance } = extractTypeAndInstance(cleanName);
+              if (type && instance) {
+                suggestedCode = `${s.signer}.${type}.${instance}`;
+              } else {
+                suggestedCode = s.field_name;
+              }
             }
           }
           // Safety net: if still no suggested_code (no signer, no prior edit that set it),
