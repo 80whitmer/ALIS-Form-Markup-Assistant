@@ -200,16 +200,20 @@ def update_hierarchy_holistically(field_ref, suggested_code):
     print(f"[field-updater] [DEBUG]   Result: {result}")
 
 
-def process_field_recursive(field_ref, suggestions):
+def collect_all_fields(field_ref, result=None):
     """
-    Recursively process fields, including nested fields in groups.
-    Returns the number of fields updated.
+    PASS 1: Recursively collect all leaf field refs and their full names.
+    Returns a list of (full_name, field_ref) tuples.
+
+    MUST be called before any renaming — names are read from the unmodified PDF.
+    This avoids the shared-hierarchy corruption where renaming one field changes
+    a shared parent /T node, causing sibling fields to appear under the wrong name
+    when build_full_field_name is called for them afterwards.
     """
-    updated_count = 0
+    if result is None:
+        result = []
 
     try:
-        # If this has /Kids, determine whether they are child FIELDS or widget ANNOTATIONS.
-        # Child fields have /T; widget annotations do not.
         if '/Kids' in field_ref:
             kids = field_ref['/Kids']
             kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
@@ -217,118 +221,116 @@ def process_field_recursive(field_ref, suggestions):
             if any('/T' in k for k in kid_objs):
                 # Field group — recurse into child fields
                 for kid_obj in kid_objs:
-                    updated_count += process_field_recursive(kid_obj, suggestions)
-                return updated_count
-            # else: /Kids are widget annotations → fall through and process this
-            # node as a terminal field (rename its /T value, set flags, etc.)
+                    collect_all_fields(kid_obj, result)
+                return result
+            # else: /Kids are widget annotations → treat this node as a terminal field
 
-        # If this is a leaf field, check if it has a name
         if '/T' not in field_ref:
-            return 0
+            return result
 
-        # Build full hierarchical field name
-        field_name = build_full_field_name(field_ref)
-
-        # Check if this field matches any suggestion
-        matched = False
-        for suggestion in suggestions:
-            if suggestion.get('approval_status') != 'approved':
-                continue
-
-            # CRITICAL: Match against original_field_name if available (immutable original PDF field name)
-            # Fall back to field_name for backward compatibility (for suggestions created before original_field_name was added)
-            suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
-
-            if field_name == suggestion_field_name:
-                matched = True
-                old_name = suggestion_field_name  # Use the original field name for logging
-                new_code = suggestion.get('suggested_code')
-
-                # Validate new_code is not None or empty
-                if not new_code:
-                    print(f"[field-updater] WARNING: suggested_code is empty for field {old_name}, skipping")
-                    continue
-
-                # Normalize the suggested code — strips any pre-existing |pipe suffix, converts button→check
-                new_code = normalize_suggested_code(new_code)
-
-                # If the name isn't changing, we still apply flags/tooltip — but skip the
-                # rename step to avoid needlessly dirtying the PDF hierarchy.
-                name_changed = (new_code != old_name)
-
-                # Build the hover-text tooltip if a signer is provided.
-                # Guard against None signer (fields the user left without a signer assignment).
-                signer = suggestion.get('signer')
-                if signer:
-                    tooltip_code = f"{new_code}|{new_code}"
-                    tooltip = f"[{signer}] {tooltip_code}"
-                else:
-                    tooltip = None
-
-                required = suggestion.get('required', False)
-                read_only = suggestion.get('read_only', False)
-
-                # 1. Write clean field name (NO pipe suffix) into the PDF hierarchy
-                if name_changed:
-                    update_hierarchy_holistically(field_ref, new_code)
-                    print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
-                else:
-                    print(f"[field-updater] [SKIP rename] {old_name} (name unchanged)")
-
-                # 2. Set required/read_only flags (Ff field flags)
-                # Bit 0 (0x1) = ReadOnly
-                # Bit 1 (0x2) = Required
-                flags = field_ref['/Ff'] if '/Ff' in field_ref else 0
-                if isinstance(flags, pikepdf.Object):
-                    flags = int(flags)
-                else:
-                    flags = int(flags) if flags else 0
-
-                if required:
-                    flags |= 0x2  # Set Required bit
-                else:
-                    flags &= ~0x2  # Clear Required bit
-
-                if read_only:
-                    flags |= 0x1  # Set ReadOnly bit
-                else:
-                    flags &= ~0x1  # Clear ReadOnly bit
-
-                field_ref['/Ff'] = flags
-                print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
-
-                # 3. Add tooltip (TU) to the field node AND any widget annotation kids.
-                # Only set if signer is provided — avoids writing "[None] ..." on unsignable fields.
-                # PDF viewers (e.g. Acrobat) read /TU from the widget annotation, not the
-                # parent field node, so setting it only on field_ref leaves the visible
-                # hover text unchanged for multi-widget fields.
-                if tooltip:
-                    field_ref['/TU'] = tooltip
-                    if '/Kids' in field_ref:
-                        kids = field_ref['/Kids']
-                        kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
-                        # Only update kids that are widget annotations (no /T), not child fields
-                        for kid_obj in kid_objs:
-                            if '/T' not in kid_obj:
-                                kid_obj['/TU'] = tooltip
-                    print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
-
-                return 1  # One field updated
-
-        if not matched:
-            print(f"[field-updater] [NO MATCH] PDF field '{field_name}' did not match any suggestion")
-
-        return 0  # No match found
+        full_name = build_full_field_name(field_ref)
+        result.append((full_name, field_ref))
 
     except Exception as e:
-        print(f"[field-updater] Warning: Error processing field: {e}")
+        print(f"[field-updater] Warning: Error collecting field: {e}")
+
+    return result
+
+
+def apply_single_field_update(field_ref, suggestion):
+    """
+    PASS 2: Apply suggestion (rename, flags, tooltip) to a single pre-matched field_ref.
+    Returns 1 if the field was successfully processed, 0 on error.
+    """
+    try:
+        old_name = suggestion.get('original_field_name') or suggestion.get('field_name')
+        new_code = suggestion.get('suggested_code')
+
+        if not new_code:
+            print(f"[field-updater] WARNING: suggested_code is empty for field {old_name}, skipping")
+            return 0
+
+        # Normalize: strip any pre-existing |pipe suffix, convert button→check
+        new_code = normalize_suggested_code(new_code)
+
+        # Skip rename step if the name isn't actually changing (avoids dirtying the hierarchy)
+        name_changed = (new_code != old_name)
+
+        # Build hover-text tooltip if a signer is provided.
+        # Guard against None signer (fields the user left without a signer assignment).
+        signer = suggestion.get('signer')
+        if signer:
+            tooltip_code = f"{new_code}|{new_code}"
+            tooltip = f"[{signer}] {tooltip_code}"
+        else:
+            tooltip = None
+
+        required = suggestion.get('required', False)
+        read_only = suggestion.get('read_only', False)
+
+        # 1. Write clean field name (NO pipe suffix) into the PDF hierarchy
+        if name_changed:
+            update_hierarchy_holistically(field_ref, new_code)
+            print(f"[field-updater] [SUCCESS] Renamed: {old_name} -> {new_code}")
+        else:
+            print(f"[field-updater] [SKIP rename] {old_name} (name unchanged)")
+
+        # 2. Set required/read_only flags (Ff field flags)
+        # Bit 0 (0x1) = ReadOnly,  Bit 1 (0x2) = Required
+        flags = field_ref['/Ff'] if '/Ff' in field_ref else 0
+        if isinstance(flags, pikepdf.Object):
+            flags = int(flags)
+        else:
+            flags = int(flags) if flags else 0
+
+        if required:
+            flags |= 0x2   # Set Required bit
+        else:
+            flags &= ~0x2  # Clear Required bit
+
+        if read_only:
+            flags |= 0x1   # Set ReadOnly bit
+        else:
+            flags &= ~0x1  # Clear ReadOnly bit
+
+        field_ref['/Ff'] = flags
+        print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
+
+        # 3. Add tooltip (TU) to the field node AND any widget annotation kids.
+        # PDF viewers (e.g. Acrobat) read /TU from the widget annotation, not the
+        # parent field node, so we propagate it to widget kids for multi-widget fields.
+        if tooltip:
+            field_ref['/TU'] = tooltip
+            if '/Kids' in field_ref:
+                kids = field_ref['/Kids']
+                kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+                # Only update widget annotation kids (no /T), not child fields
+                for kid_obj in kid_objs:
+                    if '/T' not in kid_obj:
+                        kid_obj['/TU'] = tooltip
+            print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
+
+        return 1
+
+    except Exception as e:
+        print(f"[field-updater] Warning: Error applying updates to field: {e}")
         return 0
 
 
 def update_fields(pdf_path, suggestions, output_path):
     """
     Update form fields in a PDF with all properties and new names.
-    Handles hierarchical (nested) field structures by recursively processing field groups.
+
+    Two-pass strategy to prevent shared-hierarchy corruption:
+      PASS 1 — collect_all_fields: Walk the entire AcroForm tree and snapshot every
+               leaf field's full name (build_full_field_name) into a list BEFORE any
+               renaming occurs. Since update_hierarchy_holistically mutates shared
+               parent /T nodes, doing name-reads and renames in the same loop causes
+               sibling fields to appear under a corrupted name on their turn → [NO MATCH].
+      PASS 2 — apply_single_field_update: Iterate the pre-collected list, match each
+               field against suggestions by original_field_name, and apply rename/flags/
+               tooltip. No build_full_field_name calls happen here, so shared-parent
+               mutations from earlier iterations don't corrupt later matches.
 
     Args:
         pdf_path: Path to input PDF
@@ -339,12 +341,10 @@ def update_fields(pdf_path, suggestions, output_path):
         Number of fields successfully updated
     """
     try:
-        # Open the PDF with allow_overwriting_input if input and output are the same
         allow_overwrite = (pdf_path == output_path)
         with pikepdf.open(pdf_path, allow_overwriting_input=allow_overwrite) as pdf:
             updated_count = 0
 
-            # Check if PDF has an AcroForm (form fields)
             if '/AcroForm' not in pdf.Root:
                 print("[field-updater] No AcroForm found in PDF")
                 pdf.save(output_path)
@@ -357,35 +357,35 @@ def update_fields(pdf_path, suggestions, output_path):
                 return 0
 
             fields = acroform['/Fields']
-
             print(f"[field-updater] Found {len(fields)} top-level field groups in PDF AcroForm", file=sys.stderr, flush=True)
 
-            # Debug: Print all field names in PDF (including nested ones)
-            pdf_field_names = []
-            def collect_field_names(field_ref):
-                try:
-                    if '/Kids' in field_ref:
-                        # This is a field group, recurse into children
-                        kids = field_ref['/Kids']
-                        for kid in kids:
-                            kid_obj = kid.get_object() if hasattr(kid, 'get_object') else kid
-                            collect_field_names(kid_obj)
-                    elif '/T' in field_ref:
-                        # This is a leaf field
-                        name = build_full_field_name(field_ref)
-                        pdf_field_names.append(name)
-                except:
-                    pass
+            # ── PASS 1: Snapshot all field names before any modification ──────────
+            all_field_refs = []
+            for field_ref_proxy in fields:
+                field_obj = field_ref_proxy.get_object() if hasattr(field_ref_proxy, 'get_object') else field_ref_proxy
+                collect_all_fields(field_obj, all_field_refs)
 
-            for field_ref in fields:
-                collect_field_names(field_ref)
-
+            pdf_field_names = [name for name, _ in all_field_refs]
+            print(f"[field-updater] Collected {len(all_field_refs)} leaf fields for matching", file=sys.stderr, flush=True)
             print(f"[field-updater] All PDF field names (including nested): {pdf_field_names}", file=sys.stderr, flush=True)
-            print(f"[field-updater] Suggestion field names to match: {sorted([s.get('field_name') for s in suggestions])}", file=sys.stderr, flush=True)
+            print(f"[field-updater] Suggestion field names to match: {sorted([s.get('original_field_name') or s.get('field_name') for s in suggestions])}", file=sys.stderr, flush=True)
 
-            # Recursively process all fields (handles nested fields in groups)
-            for field_ref in fields:
-                updated_count += process_field_recursive(field_ref, suggestions)
+            # ── PASS 2: Match pre-collected refs → apply updates ──────────────────
+            for field_name, field_ref in all_field_refs:
+                matched = False
+                for suggestion in suggestions:
+                    if suggestion.get('approval_status') != 'approved':
+                        continue
+                    # Match against original_field_name (immutable original PDF name).
+                    # Fall back to field_name for backward compatibility.
+                    suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
+                    if field_name == suggestion_field_name:
+                        matched = True
+                        updated_count += apply_single_field_update(field_ref, suggestion)
+                        break  # each PDF field matches at most one suggestion
+
+                if not matched:
+                    print(f"[field-updater] [NO MATCH] PDF field '{field_name}' did not match any suggestion")
 
             # Save the modified PDF
             pdf.save(output_path)
