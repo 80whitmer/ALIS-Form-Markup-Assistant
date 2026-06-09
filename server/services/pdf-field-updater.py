@@ -119,6 +119,12 @@ def detach_field_from_parent(field_ref, acroform):
         new_kids = []
         removed = False
 
+        # Snapshot the leaf /T value so we can fall back to name-matching
+        try:
+            leaf_t = str(field_ref['/T']).replace('"', '').replace("'", '') if '/T' in field_ref else None
+        except:
+            leaf_t = None
+
         for kid_ref in original_kids:
             kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
 
@@ -131,10 +137,24 @@ def detach_field_from_parent(field_ref, acroform):
                 elif hasattr(kid, 'objgen') and hasattr(field_ref, 'objgen'):
                     if kid.objgen == field_ref.objgen:
                         is_target = True
+                # Strategy 3: match by leaf /T value (last resort — only if leaf is unique in this parent)
+                elif leaf_t is not None and '/T' in kid:
+                    try:
+                        kid_t = str(kid['/T']).replace('"', '').replace("'", '')
+                        if kid_t == leaf_t:
+                            # Only use this if there's exactly one kid with this /T
+                            siblings_with_same_t = sum(
+                                1 for k in [x.get_object() if hasattr(x,'get_object') else x for x in original_kids]
+                                if '/T' in k and str(k['/T']).replace('"','').replace("'",'') == leaf_t
+                            )
+                            if siblings_with_same_t == 1:
+                                is_target = True
+                    except:
+                        pass
 
             if is_target and not removed:
                 removed = True
-                continue  # exclude this kid → effectively removes it
+                continue  # exclude this kid (removes it from the parent)
             new_kids.append(kid_ref)
 
         if removed:
@@ -146,9 +166,81 @@ def detach_field_from_parent(field_ref, acroform):
     # Sever the upward link
     del field_ref['/Parent']
 
+    # Clean up any intermediate parent nodes that are now empty.
+    # If removing this field left the parent with no named children, that parent
+    # would be treated as a phantom leaf field by PDF walkers — recurse up and
+    # remove it from its own parent too.
+    _cleanup_empty_parent(parent)
+
     # Re-add as a root-level AcroForm field
     acroform['/Fields'].append(field_ref)
     print(f"[field-updater] [DEBUG]   Re-attached as root-level AcroForm field")
+
+
+def _cleanup_empty_parent(node):
+    """
+    If `node` has no remaining named children (/Kids that contain /T),
+    remove it from its own parent's /Kids recursively up the tree.
+    Stops when a node still has named children or has no parent.
+    """
+    if '/Kids' not in node:
+        return  # Not a group node — nothing to clean up
+
+    kids = [k.get_object() if hasattr(k, 'get_object') else k for k in node['/Kids']]
+    named_kids = [k for k in kids if '/T' in k]
+    if named_kids:
+        return  # Still has named descendants — leave it alone
+
+    # No named children left. Remove this node from its parent.
+    if '/Parent' not in node:
+        return  # Root-level node, can't remove further
+
+    grandparent_proxy = node['/Parent']
+    grandparent = grandparent_proxy.get_object() if hasattr(grandparent_proxy, 'get_object') else grandparent_proxy
+
+    if '/Kids' not in grandparent:
+        return
+
+    gp_kids = list(grandparent['/Kids'])
+    new_gp_kids = []
+    removed = False
+
+    # Snapshot node's leaf /T for fallback matching
+    try:
+        node_t = str(node['/T']).replace('"', '').replace("'", '') if '/T' in node else None
+    except:
+        node_t = None
+
+    for kid_ref in gp_kids:
+        kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+        is_match = False
+        if not removed:
+            if kid is node:
+                is_match = True
+            elif hasattr(kid, 'objgen') and hasattr(node, 'objgen') and kid.objgen == node.objgen:
+                is_match = True
+            elif node_t and '/T' in kid:
+                try:
+                    kt = str(kid['/T']).replace('"', '').replace("'", '')
+                    if kt == node_t:
+                        count = sum(1 for k in [x.get_object() if hasattr(x,'get_object') else x for x in gp_kids]
+                                    if '/T' in k and str(k['/T']).replace('"','').replace("'",'') == node_t)
+                        if count == 1:
+                            is_match = True
+                except:
+                    pass
+        if is_match and not removed:
+            removed = True
+            continue
+        new_gp_kids.append(kid_ref)
+
+    if removed:
+        grandparent['/Kids'] = pikepdf.Array(new_gp_kids)
+        if '/Parent' in node:
+            del node['/Parent']
+        print(f"[field-updater] [DEBUG]   Cleaned up empty intermediate parent node")
+        # Continue cleaning up the grandparent if it is now also empty
+        _cleanup_empty_parent(grandparent)
 
 
 def update_hierarchy_holistically(field_ref, acroform, suggested_code):
@@ -208,54 +300,79 @@ def update_hierarchy_holistically(field_ref, acroform, suggested_code):
     print(f"[field-updater] [DEBUG]   Named levels: {len(named_levels)}, Segments: {len(segments)}")
 
     # ── Strategy 1: flat field ────────────────────────────────────────────────
+    # One named level, multiple segments: write the full dotted name into that /T.
+    # No shared-parent issue possible — the single level is this field's own node.
     if len(named_levels) == 1 and len(segments) > 1:
         named_levels[0]['/T'] = '.'.join(segments)
         print(f"[field-updater] [DEBUG]   Strategy: flat field, full name in /T")
         return
 
-    # ── Strategy 2 / 3: exact level count ────────────────────────────────────
+    # ── UNIVERSAL shared-parent / unreachable-result check ───────────────────
+    # Before applying any multi-level strategy, verify two things:
+    #   A) No non-leaf parent that needs a DIFFERENT value is shared (has >1 named child).
+    #      Changing a shared parent corrupts all sibling fields.
+    #   B) The best achievable result using the existing hierarchy will equal suggested_code.
+    #      If not (e.g., fewer segments → leaf-only can't move the field to a new namespace),
+    #      detach-and-flatten is the only correct option.
+    needs_detach = False
+    detach_reason = ''
+
+    # Check A: shared-parent conflict in the overlapping prefix
+    common_depth = min(len(named_levels) - 1, len(segments) - 1)
+    for i in range(common_depth):
+        current_val = str(named_levels[i]['/T']).replace('"', '').replace("'", '') if named_levels[i]['/T'] is not None else ''
+        desired_val = segments[i]
+        if current_val != desired_val:
+            if '/Kids' in named_levels[i]:
+                kids_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in named_levels[i]['/Kids']]
+                named_kids_count = sum(1 for k in kids_objs if '/T' in k)
+                if named_kids_count > 1:
+                    needs_detach = True
+                    detach_reason = (f"level {i} ('{current_val}' needs '{desired_val}') "
+                                     f"is shared by {named_kids_count} named children")
+                    break
+
+    # Check B: would the best strategy even produce the right name?
+    if not needs_detach:
+        if len(named_levels) == len(segments):
+            achievable = suggested_code  # distribute strategy always achieves it
+        elif len(segments) > len(named_levels):
+            achievable = suggested_code  # tail-pack strategy always achieves it
+        else:
+            # Fewer segments: Strategy 5 (leaf only) would give:
+            #   <existing parent prefix>.<new leaf>
+            parent_prefix = '.'.join(str(l['/T']).replace('"','').replace("'",'') for l in named_levels[:-1])
+            achievable = parent_prefix + '.' + segments[-1] if parent_prefix else segments[-1]
+        if achievable != suggested_code:
+            needs_detach = True
+            detach_reason = f"best achievable name '{achievable}' != '{suggested_code}'"
+
+    if needs_detach:
+        print(f"[field-updater] [DEBUG]   Detach required: {detach_reason}")
+        detach_field_from_parent(field_ref, acroform)
+        field_ref['/T'] = suggested_code
+        print(f"[field-updater] [DEBUG]   Strategy: detach+flatten, /T='{suggested_code}'")
+        return
+
+    # ── Strategy 2: exact level count, no conflicts — distribute ─────────────
     if len(named_levels) == len(segments):
-        # Check non-leaf levels for shared-parent conflicts
-        needs_detach = False
-        for i, level in enumerate(named_levels[:-1]):  # skip leaf (last)
-            current_val = str(level['/T']).replace('"', '').replace("'", '') if level['/T'] is not None else ''
-            desired_val = segments[i]
-            if current_val != desired_val:
-                # This parent needs a different value — is it shared?
-                if '/Kids' in level:
-                    kids_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in level['/Kids']]
-                    named_kids_count = sum(1 for k in kids_objs if '/T' in k)
-                    if named_kids_count > 1:
-                        needs_detach = True
-                        print(f"[field-updater] [DEBUG]   Level {i} ('{current_val}' needs to become '{desired_val}') "
-                              f"is shared by {named_kids_count} named children - detaching field instead")
-                        break
-
-        if needs_detach:
-            # Strategy 3: detach from shared hierarchy, flatten at root
-            detach_field_from_parent(field_ref, acroform)
-            field_ref['/T'] = suggested_code
-            print(f"[field-updater] [DEBUG]   Strategy: detach+flatten, /T='{suggested_code}'")
-            return
-
-        # Strategy 2: no conflicts — distribute one segment per level
         for i, level in enumerate(named_levels):
             level['/T'] = segments[i]
         print(f"[field-updater] [DEBUG]   Strategy: exact match, distributed segments")
         return
 
-    # ── Strategy 4: more segments than levels ────────────────────────────────
+    # ── Strategy 4: more segments than levels — pack tail into leaf ───────────
     if len(segments) > len(named_levels):
-        print(f"[field-updater] [DEBUG]   Strategy: more segments ({len(segments)}) than levels "
-              f"({len(named_levels)}), packing tail into leaf")
+        print(f"[field-updater] [DEBUG]   Strategy: {len(segments)} segments > {len(named_levels)} levels, packing tail into leaf")
         for i in range(len(named_levels) - 1):
             named_levels[i]['/T'] = segments[i]
         named_levels[-1]['/T'] = '.'.join(segments[len(named_levels) - 1:])
         return
 
     # ── Strategy 5: fewer segments than levels — leaf only ───────────────────
-    print(f"[field-updater] [DEBUG]   Strategy: fewer segments ({len(segments)}) than levels "
-          f"({len(named_levels)}), updating leaf only")
+    # (Only reached when achievable == suggested_code, meaning the parent prefix
+    #  already matches and only the leaf segment needs updating.)
+    print(f"[field-updater] [DEBUG]   Strategy: {len(segments)} segments < {len(named_levels)} levels, leaf only")
     named_levels[-1]['/T'] = segments[-1]
 
 
@@ -316,14 +433,8 @@ def apply_single_field_update(field_ref, suggestion, acroform):
         # Skip rename step if the name isn't actually changing (avoids dirtying the hierarchy)
         name_changed = (new_code != old_name)
 
-        # Build hover-text tooltip if a signer is provided.
-        # Guard against None signer (fields the user left without a signer assignment).
-        signer = suggestion.get('signer')
-        if signer:
-            tooltip_code = f"{new_code}|{new_code}"
-            tooltip = f"[{signer}] {tooltip_code}"
-        else:
-            tooltip = None
+        # Hover text matches the field name exactly — one-for-one, no extras.
+        tooltip = new_code
 
         required = suggestion.get('required', False)
         read_only = suggestion.get('read_only', False)
@@ -431,9 +542,15 @@ def update_fields(pdf_path, suggestions, output_path):
             print(f"[field-updater] Suggestion field names to match: {sorted([s.get('original_field_name') or s.get('field_name') for s in suggestions])}", file=sys.stderr, flush=True)
 
             # ── PASS 2: Match pre-collected refs → apply updates ──────────────────
+            # Use a consumed-suggestion set so that when two PDF fields share the
+            # same original name (duplicate fields), each one matches a distinct
+            # suggestion in order rather than both matching the first suggestion.
+            used_suggestion_indices = set()
             for field_name, field_ref in all_field_refs:
                 matched = False
-                for suggestion in suggestions:
+                for i, suggestion in enumerate(suggestions):
+                    if i in used_suggestion_indices:
+                        continue
                     if suggestion.get('approval_status') != 'approved':
                         continue
                     # Match against original_field_name (immutable original PDF name).
@@ -441,6 +558,7 @@ def update_fields(pdf_path, suggestions, output_path):
                     suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
                     if field_name == suggestion_field_name:
                         matched = True
+                        used_suggestion_indices.add(i)
                         updated_count += apply_single_field_update(field_ref, suggestion, acroform)
                         break  # each PDF field matches at most one suggestion
 
