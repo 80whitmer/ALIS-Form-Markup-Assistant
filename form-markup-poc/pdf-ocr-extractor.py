@@ -25,133 +25,231 @@ import sys
 import json
 import argparse
 import numpy as np
+import concurrent.futures
 from pathlib import Path
 
-try:
-    import easyocr
-    print("[ocr-extractor] Using EasyOCR for text extraction", file=sys.stderr)
-except ImportError:
-    print("[ocr-extractor] easyocr not found, attempting to install...", file=sys.stderr)
-    import subprocess
-    try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'easyocr', '--break-system-packages', '--quiet'])
-        import easyocr
-        print("[ocr-extractor] easyocr installed successfully", file=sys.stderr)
-    except Exception as e:
-        print(f"[ocr-extractor] ERROR: Could not install easyocr: {e}", file=sys.stderr)
-        print(f"[ocr-extractor] Please install manually: pip install easyocr", file=sys.stderr)
-        sys.exit(1)
+# ── Dependency bootstrap ──────────────────────────────────────────────────────
+import subprocess
 
-try:
-    from pdf2image import convert_from_path
-except ImportError:
-    print("[ocr-extractor] pdf2image not found, attempting to install...", file=sys.stderr)
-    import subprocess
+def _ensure(pkg, import_name=None):
+    name = import_name or pkg
     try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pdf2image', '--quiet'])
-        from pdf2image import convert_from_path
-        print("[ocr-extractor] pdf2image installed successfully", file=sys.stderr)
-    except Exception as e:
-        print(f"[ocr-extractor] ERROR: Could not install pdf2image: {e}", file=sys.stderr)
-        print(f"[ocr-extractor] Please install manually: pip install pdf2image", file=sys.stderr)
-        sys.exit(1)
+        return __import__(name)
+    except ImportError:
+        print(f"[ocr-extractor] {pkg} not found, attempting to install...", file=sys.stderr)
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg, '--quiet'])
+            return __import__(name)
+        except Exception as e:
+            print(f"[ocr-extractor] ERROR: Could not install {pkg}: {e}", file=sys.stderr)
+            sys.exit(1)
 
+_ensure('easyocr')
+_ensure('pdf2image')
+_ensure('pymupdf', 'fitz')
+
+import easyocr
+import fitz  # pymupdf — fast embedded-text extraction
+from pdf2image import convert_from_path
+
+
+# ── Embedded-text extraction (fast path) ─────────────────────────────────────
+
+def _extract_embedded_text(pdf_path):
+    """
+    Extract text directly from the PDF's embedded text layer using pymupdf.
+    Returns None if the PDF has no usable embedded text (i.e. it's a scanned image).
+    Otherwise returns the same pages/text_regions structure that OCR would produce,
+    with coordinates scaled to match 150 DPI image space.
+    """
+    DPI = 150
+    SCALE = DPI / 72.0  # PDF points → pixel coords at 150 DPI
+
+    try:
+        doc = fitz.open(pdf_path)
+        pages = []
+        total_regions = 0
+
+        for page_num, page in enumerate(doc, start=1):
+            blocks = page.get_text("words")  # (x0, y0, x1, y1, word, block_no, line_no, word_no)
+            text_regions = []
+            for b in blocks:
+                x0, y0, x1, y1, word = b[0], b[1], b[2], b[3], b[4]
+                word = word.strip()
+                if not word:
+                    continue
+                text_regions.append({
+                    'text': word,
+                    'x': int(x0 * SCALE),
+                    'y': int(y0 * SCALE),
+                    'width': int((x1 - x0) * SCALE),
+                    'height': int((y1 - y0) * SCALE),
+                    'confidence': 99,  # embedded text = effectively certain
+                })
+            total_regions += len(text_regions)
+            pages.append({'page': page_num, 'text_regions': text_regions})
+
+        doc.close()
+
+        # If almost no text was found, this is likely a scanned PDF — fall back to OCR
+        avg_regions_per_page = total_regions / max(len(pages), 1)
+        if avg_regions_per_page < 2:
+            print(f"[ocr-extractor] Embedded text too sparse ({total_regions} regions across {len(pages)} pages) — falling back to OCR", file=sys.stderr)
+            return None
+
+        print(f"[ocr-extractor] Embedded text extracted: {total_regions} regions across {len(pages)} pages (no OCR needed)", file=sys.stderr)
+        return {'status': 'success', 'total_pages': len(pages), 'pages': pages, 'method': 'embedded'}
+
+    except Exception as e:
+        print(f"[ocr-extractor] Embedded text extraction failed ({e}), falling back to OCR", file=sys.stderr)
+        return None
+
+
+# ── Per-page OCR worker (runs in a subprocess worker process) ─────────────────
+
+# Module-level reader cache so each worker process initialises EasyOCR only once
+_reader_cache = None
+
+def _ocr_page(args):
+    """
+    Worker function: OCR a single page image.
+    args = (page_num, total_pages, image_array)
+    Returns (page_num, text_regions).
+    """
+    global _reader_cache
+    page_num, total_pages, image_array = args
+
+    if _reader_cache is None:
+        # Detect GPU once per worker
+        try:
+            import torch
+            use_gpu = torch.cuda.is_available()
+        except Exception:
+            use_gpu = False
+        _reader_cache = easyocr.Reader(['en'], gpu=use_gpu, verbose=False)
+
+    print(f"[ocr-extractor] Extracting text from page {page_num}/{total_pages}...", file=sys.stderr)
+    results = _reader_cache.readtext(image_array, detail=1)
+
+    text_regions = []
+    for (bbox, text, confidence) in results:
+        if not text or confidence < 0.3:
+            continue
+        x_coords = [p[0] for p in bbox]
+        y_coords = [p[1] for p in bbox]
+        x = min(x_coords)
+        y = min(y_coords)
+        text_regions.append({
+            'text': text.strip(),
+            'x': int(x),
+            'y': int(y),
+            'width': int(max(x_coords) - x),
+            'height': int(max(y_coords) - y),
+            'confidence': int(confidence * 100),
+        })
+
+    print(f"[ocr-extractor] Page {page_num}: Found {len(text_regions)} text regions", file=sys.stderr)
+    return page_num, text_regions
+
+
+# ── OCR extraction (slow path, parallel) ─────────────────────────────────────
+
+def _extract_ocr(pdf_path):
+    """
+    Convert PDF pages to images and run EasyOCR in parallel across all pages.
+    Uses a ThreadPoolExecutor — EasyOCR releases the GIL during torch inference,
+    giving meaningful parallelism without the overhead of spawning new processes.
+    """
+    POPPLER_PATH = r"C:\poppler\poppler-26.02.0\Library\bin"
+    DPI = 100  # 100 dpi is plenty for signer-label words; 150 was unnecessarily slow
+
+    print(f"[ocr-extractor] Converting PDF to images (dpi={DPI})...", file=sys.stderr)
+    images = convert_from_path(pdf_path, dpi=DPI, poppler_path=POPPLER_PATH)
+    total = len(images)
+    print(f"[ocr-extractor] Converted {total} pages to images", file=sys.stderr)
+
+    # Detect GPU once in the main process for logging
+    try:
+        import torch
+        use_gpu = torch.cuda.is_available()
+    except Exception:
+        use_gpu = False
+
+    print(f"[ocr-extractor] Initializing EasyOCR reader (gpu={use_gpu})...", file=sys.stderr)
+    reader = easyocr.Reader(['en'], gpu=use_gpu, verbose=False)
+
+    # Build task list — convert images to numpy arrays up-front
+    tasks = [(i + 1, total, np.array(img)) for i, img in enumerate(images)]
+
+    # Run pages in parallel with threads (EasyOCR/torch releases GIL during inference)
+    max_workers = min(4, total)
+    print(f"[ocr-extractor] Processing {total} pages with {max_workers} parallel workers...", file=sys.stderr)
+
+    page_results = [None] * total
+
+    def _run_page(args):
+        page_num, total_pages, image_array = args
+        print(f"[ocr-extractor] Extracting text from page {page_num}/{total_pages}...", file=sys.stderr)
+        results = reader.readtext(image_array, detail=1)
+        text_regions = []
+        for (bbox, text, confidence) in results:
+            if not text or confidence < 0.3:
+                continue
+            x_coords = [p[0] for p in bbox]
+            y_coords = [p[1] for p in bbox]
+            x = min(x_coords)
+            y = min(y_coords)
+            text_regions.append({
+                'text': text.strip(),
+                'x': int(x),
+                'y': int(y),
+                'width': int(max(x_coords) - x),
+                'height': int(max(y_coords) - y),
+                'confidence': int(confidence * 100),
+            })
+        print(f"[ocr-extractor] Page {page_num}: Found {len(text_regions)} text regions", file=sys.stderr)
+        return page_num, text_regions
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_page, t): t[0] for t in tasks}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                page_num, regions = future.result()
+                page_results[page_num - 1] = {'page': page_num, 'text_regions': regions}
+            except Exception as e:
+                pn = futures[future]
+                print(f"[ocr-extractor] Warning: Error on page {pn}: {e}", file=sys.stderr)
+                page_results[pn - 1] = {'page': pn, 'text_regions': []}
+
+    pages = [p for p in page_results if p is not None]
+    return {'status': 'success', 'total_pages': total, 'pages': pages, 'method': 'ocr'}
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def extract_text_with_coordinates(pdf_path):
     """
     Extract text from PDF pages with bounding box coordinates.
 
-    Args:
-        pdf_path: Path to input PDF file
+    Fast path: if the PDF has an embedded text layer (most digital forms do),
+    pymupdf reads it directly in milliseconds — no image conversion, no OCR.
 
-    Returns:
-        dict: Pages with text regions containing text and coordinates
+    Slow path: if the PDF is a scanned image, fall back to parallel EasyOCR
+    at 100 DPI with up to 4 concurrent page workers.
     """
+    # Fast path — try embedded text first
+    result = _extract_embedded_text(pdf_path)
+    if result is not None:
+        return result
+
+    # Slow path — parallel OCR
     try:
-        print(f"[ocr-extractor] Converting PDF to images: {pdf_path}", file=sys.stderr)
-
-        # Explicitly specify Poppler path (Windows installation)
-        poppler_path = r"C:\poppler\poppler-26.02.0\Library\bin"
-
-        # Convert PDF to images (one image per page)
-        # Pass poppler_path explicitly to avoid PATH issues
-        images = convert_from_path(pdf_path, dpi=150, poppler_path=poppler_path)
-        print(f"[ocr-extractor] Converted {len(images)} pages to images", file=sys.stderr)
-
-        # Initialize EasyOCR reader (loads model on first use)
-        print(f"[ocr-extractor] Initializing EasyOCR reader...", file=sys.stderr)
-        reader = easyocr.Reader(['en'], gpu=False)
-
-        pages = []
-
-        for page_num, image in enumerate(images, start=1):
-            print(f"[ocr-extractor] Extracting text from page {page_num}/{len(images)}...", file=sys.stderr)
-
-            try:
-                # Convert PIL Image to numpy array (EasyOCR expects numpy array)
-                image_array = np.array(image)
-
-                # Run EasyOCR on the image
-                results = reader.readtext(image_array, detail=1)  # detail=1 gives us bounding boxes
-
-                text_regions = []
-
-                # Extract bounding boxes and text from EasyOCR results
-                # Each result is (bbox, text, confidence) where bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                for (bbox, text, confidence) in results:
-                    if not text or confidence < 0.3:
-                        continue
-
-                    # bbox is [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] - convert to x,y,width,height
-                    x_coords = [point[0] for point in bbox]
-                    y_coords = [point[1] for point in bbox]
-                    x = min(x_coords)
-                    y = min(y_coords)
-                    width = max(x_coords) - x
-                    height = max(y_coords) - y
-
-                    region = {
-                        'text': text.strip(),
-                        'x': int(x),
-                        'y': int(y),
-                        'width': int(width),
-                        'height': int(height),
-                        'confidence': int(confidence * 100)  # Convert to 0-100 scale
-                    }
-                    text_regions.append(region)
-
-                print(f"[ocr-extractor] Page {page_num}: Found {len(text_regions)} text regions", file=sys.stderr)
-
-                pages.append({
-                    'page': page_num,
-                    'text_regions': text_regions
-                })
-
-            except Exception as e:
-                import traceback
-                error_msg = str(e)
-                tb = traceback.format_exc()
-                print(f"[ocr-extractor] Warning: Error extracting page {page_num}: {error_msg}", file=sys.stderr)
-                print(f"[ocr-extractor] Traceback: {tb}", file=sys.stderr)
-                pages.append({
-                    'page': page_num,
-                    'text_regions': []
-                })
-
-        return {
-            'status': 'success',
-            'total_pages': len(images),
-            'pages': pages
-        }
-
+        return _extract_ocr(pdf_path)
     except Exception as e:
         print(f"[ocr-extractor] ERROR: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return {
-            'status': 'error',
-            'error': str(e)
-        }
+        return {'status': 'error', 'error': str(e)}
 
 
 def main():
