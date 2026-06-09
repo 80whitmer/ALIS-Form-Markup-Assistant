@@ -162,11 +162,36 @@ try {
  */
 function normalizeSigner(signer) {
   /**
-   * Normalize signer names to lowercase
-   * Examples: 'Resident' -> 'resident', 'RESPONSIBLE PARTY' -> 'responsible party'
+   * Normalize signer names to lowercase.
+   * Returns null (not 'resident') when unknown so callers can distinguish
+   * "we know this is resident" from "we have no idea".
    */
-  if (!signer) return 'resident';
-  return signer.toLowerCase().trim();
+  if (!signer) return null;
+  const s = signer.toLowerCase().trim();
+  // Collapse common variants to canonical ALIS signer names
+  if (s === 'responsible party' || s === 'responsible_party') return 'responsible_party';
+  if (s === 'admin' || s === 'administrator') return 'admin';
+  return s;
+}
+
+/**
+ * Infer the ALIS signer from an existing field name already in the PDF.
+ * If the field already follows ALIS convention (resident.signature.1, staff.text.2, etc.)
+ * we honour that rather than guessing from OCR. Returns null when unrecognisable.
+ */
+function inferSignerFromFieldName(fieldName) {
+  if (!fieldName) return null;
+  const lower = fieldName.toLowerCase();
+  // Explicit ALIS signer prefixes — check longest/most-specific first
+  if (lower.startsWith('responsible_party.') || lower.includes('responsible_party')) return 'responsible_party';
+  if (lower.startsWith('physician.') || lower.includes('physician')) return 'physician';
+  if (lower.startsWith('staff.') || lower.includes('.staff.')) return 'staff';
+  if (lower.startsWith('resident.') || lower.includes('.resident.')) return 'resident';
+  if (lower.startsWith('admin.') || lower.includes('.admin.')) return 'admin';
+  if (lower.startsWith('family.') || lower.includes('.family.')) return 'family';
+  // Fields with alis.* or generic.* prefix are not e-sign fields — leave signer null
+  if (lower.startsWith('alis.') || lower.startsWith('generic.')) return 'generic';
+  return null;
 }
 
 function generateAnchor(fieldName, fieldType, page, signer = null) {
@@ -313,55 +338,83 @@ async function runFormMarkupJob(jobId, options) {
     console.log(`[${jobId}] Phase 2: Generating suggestions...`);
     await db.run(`UPDATE jobs SET progress_phase = ? WHERE id = ?`, ['Generating suggestions...', jobId]);
     await new Promise(resolve => setTimeout(resolve, 200));
-    const suggestions = fields.map((field, idx) => {
-      // Normalize field type: button -> check (buttons are checkboxes)
+
+    // Phase 2 + 2b: Build initial suggestions and immediately merge OCR results.
+    // We do this in a single pass so that per-signer-per-type counters are assigned
+    // AFTER the best available signer is known (OCR beats field-name inference).
+    //
+    // Signer resolution priority (highest → lowest):
+    //   1. OCR label detection (found text near the field)
+    //   2. Existing field name pattern (field already named resident.xxx, staff.xxx, etc.)
+    //   3. 'generic' fallback — never assume 'resident' when we have no evidence
+    console.log(`[${jobId}] Phase 2b: Merging OCR results...`);
+
+    // Per-signer-per-type counters so numbering restarts for each signer.
+    // e.g. resident.text.1, resident.text.2 … staff.text.1, staff.text.2 …
+    const typeCounters = {};
+    function nextCounter(signer, type) {
+      const key = `${signer}.${type}`;
+      typeCounters[key] = (typeCounters[key] || 0) + 1;
+      return typeCounters[key];
+    }
+
+    const mergedSuggestions = fields.map((field) => {
       const normalizedType = field.field_type === 'button' ? 'check' : field.field_type;
-      const alisCode = `resident.${normalizedType}.${idx + 1}`;
-      const anchorName = generateAnchor(field.field_name, normalizedType, field.field_page);
+
+      // Determine best signer
+      const ocrData = ocrResults[field.field_name];
+      let signer = null;
+      let confidence = 0.0;
+      let match_text, match_zone, match_reason;
+
+      if (ocrData && ocrData.signer) {
+        // Priority 1: OCR found a label near this field
+        signer = normalizeSigner(ocrData.signer);
+        confidence = ocrData.confidence || 0.0;
+        match_text = ocrData.match_text;
+        match_zone = ocrData.match_zone;
+        match_reason = ocrData.match_reason;
+      }
+
+      if (!signer) {
+        // Priority 2: infer from existing field name already in the PDF
+        signer = inferSignerFromFieldName(field.field_name);
+      }
+
+      // Priority 3: generic fallback — do NOT assume 'resident'
+      if (!signer || signer === 'generic') {
+        signer = 'generic';
+      }
+
+      const counter = nextCounter(signer, normalizedType);
+      // Generic fields use generic.type.N; all others use signer.type.N
+      const suggested_code = signer === 'generic'
+        ? `generic.${normalizedType}.${counter}`
+        : `${signer}.${normalizedType}.${counter}`;
 
       return {
         field_name: field.field_name,
-        field_type: normalizedType,  // Store normalized type
-        field_page: field.field_page,        // ← PAGE NUMBER INCLUDED
+        field_type: normalizedType,
+        field_page: field.field_page,
         field_index: field.field_index,
-        suggested_code: alisCode,
-        signer: 'resident',
-        confidence: 0.0,
+        suggested_code,
+        signer: signer === 'generic' ? null : signer,
+        confidence,
         approval_status: 'review_needed',
         required: normalizedType === 'signature',
-        read_only: false
-      };
-    });
-
-    // Phase 2b: Merge OCR results into suggestions
-    console.log(`[${jobId}] Phase 2b: Merging OCR results...`);
-    const mergedSuggestions = suggestions.map((suggestion, idx) => {
-      const ocrData = ocrResults[suggestion.field_name];
-      if (ocrData) {
-        const signer = normalizeSigner(ocrData.signer || suggestion.signer);
-        const confidence = ocrData.confidence || suggestion.confidence;
-        // Normalize field type: button -> check (buttons are checkboxes)
-        const normalizedType = suggestion.field_type === 'button' ? 'check' : suggestion.field_type;
-        // Regenerate suggested_code with actual signer from OCR (normalized to lowercase)
-        const suggestionCode = `${signer}.${normalizedType}.${idx + 1}`;
-        return {
-          ...suggestion,
-          signer,
-          confidence,
-          suggested_code: suggestionCode,
-          match_text: ocrData.match_text,
-          match_zone: ocrData.match_zone,
-          match_reason: ocrData.match_reason
-        };
-      }
-      // Return with normalized signer even if no OCR match
-      return {
-        ...suggestion,
-        signer: normalizeSigner(suggestion.signer)
+        read_only: false,
+        ...(match_text !== undefined && { match_text, match_zone, match_reason })
       };
     });
 
     console.log(`[${jobId}] Merged OCR results: ${mergedSuggestions.filter(s => s.confidence > 0).length} fields with confidence > 0%`);
+    // Log signer distribution for smoke-test visibility
+    const signerCounts = mergedSuggestions.reduce((acc, s) => {
+      const key = s.signer || 'generic';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`[${jobId}] Signer distribution:`, signerCounts);
 
     // Phase 2c: Merge ALIS suggestions if aggressiveness level is set
     let suggestionsWithAlis = mergedSuggestions;

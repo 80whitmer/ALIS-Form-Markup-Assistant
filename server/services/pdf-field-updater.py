@@ -433,9 +433,6 @@ def apply_single_field_update(field_ref, suggestion, acroform):
         # Skip rename step if the name isn't actually changing (avoids dirtying the hierarchy)
         name_changed = (new_code != old_name)
 
-        # Hover text matches the field name exactly — one-for-one, no extras.
-        tooltip = new_code
-
         required = suggestion.get('required', False)
         read_only = suggestion.get('read_only', False)
 
@@ -467,19 +464,24 @@ def apply_single_field_update(field_ref, suggestion, acroform):
         field_ref['/Ff'] = flags
         print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
 
-        # 3. Add tooltip (TU) to the field node AND any widget annotation kids.
-        # PDF viewers (e.g. Acrobat) read /TU from the widget annotation, not the
-        # parent field node, so we propagate it to widget kids for multi-widget fields.
-        if tooltip:
-            field_ref['/TU'] = tooltip
-            if '/Kids' in field_ref:
-                kids = field_ref['/Kids']
-                kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
-                # Only update widget annotation kids (no /T), not child fields
-                for kid_obj in kid_objs:
-                    if '/T' not in kid_obj:
-                        kid_obj['/TU'] = tooltip
-            print(f"[field-updater] [SUCCESS] Added tooltip: {tooltip}")
+        # 3. Hover text (/TU): ALIS requires this to be blank (Form Markup 101 guide).
+        # Actively strip /TU from the field node and all widget annotation kids so that
+        # any stale value from a previous markup pass doesn't survive into the output.
+        def _strip_tu(node):
+            try:
+                if '/TU' in node:
+                    del node['/TU']
+            except Exception:
+                pass
+
+        _strip_tu(field_ref)
+        if '/Kids' in field_ref:
+            kids = field_ref['/Kids']
+            kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+            for kid_obj in kid_objs:
+                if '/T' not in kid_obj:   # widget annotation kids only
+                    _strip_tu(kid_obj)
+        print(f"[field-updater] [SUCCESS] Stripped hover text (/TU)")
 
         return 1
 
