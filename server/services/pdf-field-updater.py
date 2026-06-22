@@ -376,6 +376,26 @@ def update_hierarchy_holistically(field_ref, acroform, suggested_code):
     named_levels[-1]['/T'] = segments[-1]
 
 
+def get_field_page(field_ref, page_map):
+    """
+    Return the 1-based page number of a field's first widget annotation.
+    Returns None if the page cannot be determined.
+    """
+    try:
+        if '/Kids' in field_ref:
+            for kid_ref in field_ref['/Kids']:
+                kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+                if '/T' not in kid and hasattr(kid, 'objgen'):
+                    page = page_map.get(kid.objgen[0])
+                    if page is not None:
+                        return page
+        if hasattr(field_ref, 'objgen'):
+            return page_map.get(field_ref.objgen[0])
+    except Exception:
+        pass
+    return None
+
+
 def collect_all_fields(field_ref, result=None):
     """
     PASS 1: Recursively collect all leaf field refs and their full names.
@@ -413,6 +433,67 @@ def collect_all_fields(field_ref, result=None):
     return result
 
 
+def split_multi_widget_field(field_ref, n_needed, acroform, pdf):
+    """
+    Split a terminal field that has multiple widget annotations into n_needed independent fields.
+
+    The first widget stays inside field_ref (the original field node).
+    Each extra widget gets a NEW sibling field node attached directly to AcroForm /Fields
+    (root-level flat, so it is independent of the original field's parent hierarchy).
+
+    Returns a list of n_needed field objects in widget annotation order:
+      [field_ref, new_field_1, new_field_2, ...]
+    """
+    if '/Kids' not in field_ref:
+        return [field_ref]
+
+    # Collect only widget annotation children (no /T -> not a named field group)
+    widget_entries = []
+    for kid_ref in field_ref['/Kids']:
+        kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+        if '/T' not in kid:  # widget annotation (not a named field group)
+            widget_entries.append((kid_ref, kid))
+
+    if len(widget_entries) <= 1:
+        return [field_ref]  # nothing to split
+
+    # Trim to exactly n_needed widgets
+    widget_entries = widget_entries[:n_needed]
+
+    # Keep first widget in the original field
+    first_ref, _ = widget_entries[0]
+    field_ref['/Kids'] = pikepdf.Array([first_ref])
+
+    result = [field_ref]
+
+    for split_num, (extra_ref, extra_obj) in enumerate(widget_entries[1:], start=1):
+        new_field = pikepdf.Dictionary()
+
+        # Copy field-level properties from the original
+        for prop_key in ['/FT', '/Ff', '/DA', '/Q', '/MK', '/DV', '/AA']:
+            if prop_key in field_ref:
+                new_field[prop_key] = field_ref[prop_key]
+
+        # Temporary /T — will be immediately overwritten by the rename pass
+        new_field['/T'] = f'__mw_split_{split_num}__'
+        new_field['/Kids'] = pikepdf.Array([extra_ref])
+        # No /Parent: add as root-level to avoid entangling with original's parent hierarchy
+
+        new_obj = pdf.make_indirect(new_field)
+
+        # Re-point the widget's /Parent to the new independent field node
+        extra_obj['/Parent'] = new_obj
+
+        # Register with AcroForm as a root-level field
+        acroform['/Fields'].append(new_obj)
+
+        result.append(new_field)
+        print(f"[field-updater] [SPLIT] Created split field {split_num}/{n_needed - 1} "
+              f"(root-level, temp '__mw_split_{split_num}__')")
+
+    return result
+
+
 def apply_single_field_update(field_ref, suggestion, acroform):
     """
     PASS 2: Apply suggestion (rename, flags, tooltip) to a single pre-matched field_ref.
@@ -430,8 +511,13 @@ def apply_single_field_update(field_ref, suggestion, acroform):
         # Normalize: strip any pre-existing |pipe suffix, convert button→check
         new_code = normalize_suggested_code(new_code)
 
-        # Skip rename step if the name isn't actually changing (avoids dirtying the hierarchy)
-        name_changed = (new_code != old_name)
+        # Compare against the ACTUAL current field name (not suggestion's original_field_name).
+        # After a pre-split, new field nodes have temp names like "__mw_split_1__" even though
+        # their suggestion still says original_field_name="responsible_party.text.60".
+        # Using suggestion original_field_name would give name_changed=False and leave the
+        # temp name in the PDF.  Using the real current /T name catches this correctly.
+        actual_current_name = build_full_field_name(field_ref)
+        name_changed = (new_code != actual_current_name)
 
         required = suggestion.get('required', False)
         read_only = suggestion.get('read_only', False)
@@ -463,6 +549,15 @@ def apply_single_field_update(field_ref, suggestion, acroform):
 
         field_ref['/Ff'] = flags
         print(f"[field-updater] [SUCCESS] Set flags (required={required}, read_only={read_only})")
+
+        # 2b. Ensure signature fields have an /AP (appearance) dict.
+        # ALIS eSign requires /AP to be present on signature fields to recognize them as
+        # placeholders. The working WA template has an empty /AP={} on every sig field;
+        # the MT source PDF had none, which caused "Failed to send for signature."
+        ft_val = str(field_ref.get('/FT', '')) if '/FT' in field_ref else ''
+        if 'sig' in ft_val.lower() and '/AP' not in field_ref:
+            field_ref['/AP'] = pikepdf.Dictionary()
+            print(f"[field-updater] [SUCCESS] Added empty /AP to signature field {new_code}")
 
         # 3. Hover text (/TU): ALIS requires this to be blank (Form Markup 101 guide).
         # Actively strip /TU from the field node and all widget annotation kids so that
@@ -532,6 +627,19 @@ def update_fields(pdf_path, suggestions, output_path):
             fields = acroform['/Fields']
             print(f"[field-updater] Found {len(fields)} top-level field groups in PDF AcroForm", file=sys.stderr, flush=True)
 
+            # ── Build page_map: annotation object ID → 1-based page number ─────────
+            # Mirrors the detector's approach so we can do page-aware suggestion matching.
+            page_map = {}
+            for page_num, page in enumerate(pdf.pages, start=1):
+                if '/Annots' in page:
+                    for annot in page['/Annots']:
+                        try:
+                            annot_obj = annot.get_object() if hasattr(annot, 'get_object') else annot
+                            if hasattr(annot_obj, 'objgen'):
+                                page_map[annot_obj.objgen[0]] = page_num
+                        except Exception:
+                            pass
+
             # ── PASS 1: Snapshot all field names before any modification ──────────
             all_field_refs = []
             for field_ref_proxy in fields:
@@ -543,29 +651,284 @@ def update_fields(pdf_path, suggestions, output_path):
             print(f"[field-updater] All PDF field names (including nested): {pdf_field_names}", file=sys.stderr, flush=True)
             print(f"[field-updater] Suggestion field names to match: {sorted([s.get('original_field_name') or s.get('field_name') for s in suggestions])}", file=sys.stderr, flush=True)
 
+            # ── PRE-SPLIT: Expand multi-widget fields when multiple approved suggestions ──
+            # When the detector emitted N records for one logical field (all sharing the
+            # same original_field_name but needing N different suggested_codes), the PDF
+            # still holds ONE field with N widget annotations.  We must split it into N
+            # independent field nodes BEFORE the rename pass so each suggestion can target
+            # a distinct field object.
+            #
+            # Strategy:
+            #   1. Group approved suggestions by original_field_name.
+            #   2. For any original_field_name that appears 2+ times, find that field_ref
+            #      in all_field_refs, split it into N nodes (one per widget), then replace
+            #      the single entry with N entries in all_field_refs.
+            #   3. Sort the N suggestions by field_page then y (document order) so they
+            #      align with the widget order produced by the split.
+
+            from collections import defaultdict
+            sug_groups = defaultdict(list)
+            for idx, sug in enumerate(suggestions):
+                if sug.get('approval_status') != 'approved':
+                    continue
+                ofn = sug.get('original_field_name') or sug.get('field_name')
+                sug_groups[ofn].append(idx)
+
+            # Sort groups by (field_page, y) so split refs and suggestions both go
+            # top-to-bottom through the document when page-aware matching is used.
+            for ofn, idx_list in sug_groups.items():
+                if len(idx_list) > 1:
+                    idx_list.sort(key=lambda i: (
+                        suggestions[i].get('field_page', 1),
+                        suggestions[i].get('y', 0)
+                    ))
+
+            # Rebuild all_field_refs, expanding multi-widget entries
+            expanded_field_refs = []
+            split_field_names = set()
+            for field_name_entry, field_ref_entry in all_field_refs:
+                sug_idx_list = sug_groups.get(field_name_entry, [])
+                if len(sug_idx_list) > 1 and field_name_entry not in split_field_names:
+                    # If all suggestions share the same suggested_code, the user wants a
+                    # single field with multiple widgets (native PDF repeat behavior).
+                    # Do NOT split — just rename the one field object once and let all
+                    # widget annotations continue sharing it.
+                    unique_codes = set(suggestions[i].get('suggested_code', '') for i in sug_idx_list)
+
+                    # Signature fields must always be split — ALIS eSign cannot collect
+                    # a signature on a multi-widget field. Only text/check/date are safe
+                    # to keep as shared multi-widget.
+                    ft = None
+                    try:
+                        if '/FT' in field_ref_entry:
+                            ft = str(field_ref_entry['/FT']).lower()
+                    except Exception:
+                        pass
+                    is_esign_field = ft is not None and 'sig' in ft
+
+                    if len(unique_codes) == 1 and not is_esign_field:
+                        print(f"[field-updater] [SPLIT] '{field_name_entry}': all {len(sug_idx_list)} widgets "
+                              f"share code '{next(iter(unique_codes))}' — keeping as single multi-widget field")
+                        expanded_field_refs.append((field_name_entry, field_ref_entry))
+                        split_field_names.add(field_name_entry)
+                        continue
+
+                    # Split this field into one node per suggestion
+                    n = len(sug_idx_list)
+                    print(f"[field-updater] [SPLIT] '{field_name_entry}': splitting into {n} independent widget fields")
+                    split_refs = split_multi_widget_field(field_ref_entry, n, acroform, pdf)
+                    if len(split_refs) < n:
+                        print(f"[field-updater] [SPLIT] WARNING: only {len(split_refs)} widgets found "
+                              f"(expected {n}); unmatched suggestions will get NO MATCH")
+                    for sr in split_refs:
+                        expanded_field_refs.append((field_name_entry, sr))
+                    split_field_names.add(field_name_entry)
+                    # Re-snapshot after split (the new fields were added to /Fields above)
+                else:
+                    expanded_field_refs.append((field_name_entry, field_ref_entry))
+
+            if split_field_names:
+                print(f"[field-updater] Pre-split complete: {len(split_field_names)} field(s) split; "
+                      f"all_field_refs expanded from {len(all_field_refs)} to {len(expanded_field_refs)} entries")
+                all_field_refs = expanded_field_refs
+
+            # Reorder suggestions so multi-widget groups are interleaved correctly:
+            # for each group, the suggestions at sug_groups[ofn] need to be consumed
+            # in the same relative order as the split refs (document order).
+            # The existing used_suggestion_indices mechanism handles this naturally as
+            # long as the suggestions list has the grouped entries in the right order.
+            # We enforce that by building a sorted suggestions list:
+            multi_sug_indices_ordered = []  # flat list: suggestion index in desired match order
+            processed_in_groups = set()
+            for field_name_entry, _ in expanded_field_refs:
+                if field_name_entry in sug_groups and len(sug_groups[field_name_entry]) > 1:
+                    for si in sug_groups[field_name_entry]:
+                        if si not in processed_in_groups:
+                            multi_sug_indices_ordered.append(si)
+                            processed_in_groups.add(si)
+
+            # Reorder suggestions: multi-widget groups first (in document order), then the rest
+            other_indices = [i for i in range(len(suggestions)) if i not in processed_in_groups]
+            ordered_suggestion_indices = multi_sug_indices_ordered + other_indices
+            ordered_suggestions = [suggestions[i] for i in ordered_suggestion_indices]
+            # Map back: when we mark a suggestion as used, we use its position in ordered_suggestions
+            suggestions = ordered_suggestions
+
             # ── PASS 2: Match pre-collected refs → apply updates ──────────────────
-            # Use a consumed-suggestion set so that when two PDF fields share the
-            # same original name (duplicate fields), each one matches a distinct
-            # suggestion in order rather than both matching the first suggestion.
+            # Two-round matching per field_ref:
+            #   Round 1 — page-aware: require both field name AND page number to match.
+            #             This correctly routes per-page edits when the same logical field
+            #             name appears on multiple pages (e.g. "Printed Name" on pp 14,17,18).
+            #   Round 2 — name-only fallback: used when page info is unavailable or when
+            #             a field has only one candidate (no ambiguity).
             used_suggestion_indices = set()
             for field_name, field_ref in all_field_refs:
                 matched = False
-                for i, suggestion in enumerate(suggestions):
-                    if i in used_suggestion_indices:
-                        continue
-                    if suggestion.get('approval_status') != 'approved':
-                        continue
-                    # Match against original_field_name (immutable original PDF name).
-                    # Fall back to field_name for backward compatibility.
-                    suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
-                    if field_name == suggestion_field_name:
-                        matched = True
-                        used_suggestion_indices.add(i)
-                        updated_count += apply_single_field_update(field_ref, suggestion, acroform)
-                        break  # each PDF field matches at most one suggestion
+                field_page = get_field_page(field_ref, page_map)
+
+                # Round 1: name + page match
+                if field_page is not None:
+                    for i, suggestion in enumerate(suggestions):
+                        if i in used_suggestion_indices:
+                            continue
+                        if suggestion.get('approval_status') != 'approved':
+                            continue
+                        suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
+                        if field_name == suggestion_field_name and suggestion.get('field_page') == field_page:
+                            matched = True
+                            used_suggestion_indices.add(i)
+                            updated_count += apply_single_field_update(field_ref, suggestion, acroform)
+                            break
+
+                # Round 2: name-only fallback (no page info, or no page-exact match found)
+                if not matched:
+                    for i, suggestion in enumerate(suggestions):
+                        if i in used_suggestion_indices:
+                            continue
+                        if suggestion.get('approval_status') != 'approved':
+                            continue
+                        suggestion_field_name = suggestion.get('original_field_name') or suggestion.get('field_name')
+                        if field_name == suggestion_field_name:
+                            matched = True
+                            used_suggestion_indices.add(i)
+                            updated_count += apply_single_field_update(field_ref, suggestion, acroform)
+                            break
 
                 if not matched:
                     print(f"[field-updater] [NO MATCH] PDF field '{field_name}' did not match any suggestion")
+
+            # Clear SigFlags so ALIS eSign doesn't treat this as an already-signed document.
+            if '/SigFlags' in acroform:
+                del acroform['/SigFlags']
+                print("[field-updater] Cleared SigFlags from AcroForm")
+
+            # ── Repair AcroForm hierarchy for ALIS eSign compatibility ────────────
+            # ALIS eSign requires a clean 3-group top-level structure:
+            #   [alis, responsible_party, community_representative]
+            # Two problems accumulate over edit cycles and must be fixed before save:
+            #
+            # 1. DUPLICATE SIGNER GROUPS — multiple top-level nodes with the same /T
+            #    (e.g. three separate "responsible_party" groups). Merge them into one.
+            # 2. FLAT ROOT FIELDS — leaf fields with dots in their /T sitting at root
+            #    (e.g. /T="responsible_party.text.20") instead of being nested under
+            #    the proper signer > type > leaf hierarchy. Re-nest them.
+            #
+            # Both issues cause ALIS eSign "Failed to send for signature" — confirmed
+            # by comparing a broken MT template against the known-working WA template.
+
+            def _find_or_create_subgroup(signer_ref, signer_obj, subgroup_name):
+                for kid_ref in signer_obj.get('/Kids', []):
+                    kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+                    if '/T' in kid and str(kid['/T']) == subgroup_name:
+                        return kid_ref, kid
+                new_grp = pikepdf.Dictionary(
+                    T=pikepdf.String(subgroup_name),
+                    Kids=pikepdf.Array(),
+                    Parent=signer_ref
+                )
+                new_ref = pdf.make_indirect(new_grp)
+                signer_obj['/Kids'].append(new_ref)
+                return new_ref, new_grp
+
+            fields_list = list(acroform['/Fields'])
+
+            # Pass A: merge duplicate signer group nodes
+            group_objs = {}   # name -> first group obj
+            group_refs = {}   # name -> first group ref
+            keep = []
+            for fref in fields_list:
+                f = fref.get_object() if hasattr(fref, 'get_object') else fref
+                if '/T' not in f:
+                    keep.append(fref)
+                    continue
+                name = str(f['/T'])
+                kids = list(f.get('/Kids', []))
+                kid_objs = [k.get_object() if hasattr(k, 'get_object') else k for k in kids]
+                is_group = any('/T' in k for k in kid_objs)
+                if is_group and '.' not in name:
+                    if name not in group_refs:
+                        group_refs[name] = fref
+                        group_objs[name] = f
+                        keep.append(fref)
+                    else:
+                        # Merge kids into the first group, combining same-named subgroups
+                        for kid_ref in f.get('/Kids', []):
+                            kid = kid_ref.get_object() if hasattr(kid_ref, 'get_object') else kid_ref
+                            kname = str(kid.get('/T', ''))
+                            sub_ref, sub_obj = _find_or_create_subgroup(
+                                group_refs[name], group_objs[name], kname)
+                            for leaf_ref in kid.get('/Kids', []):
+                                leaf = leaf_ref.get_object() if hasattr(leaf_ref, 'get_object') else leaf_ref
+                                leaf['/Parent'] = sub_ref
+                                sub_obj['/Kids'].append(leaf_ref)
+                        print(f"[field-updater] Merged duplicate '{name}' group into primary")
+                else:
+                    keep.append(fref)
+
+            merged_dupes = len(fields_list) - len(keep)
+            if merged_dupes:
+                print(f"[field-updater] Hierarchy repair: merged {merged_dupes} duplicate signer group(s)")
+
+            # Pass B: re-nest flat root fields (dots in /T)
+            flat_fields = [(fref, str((fref.get_object() if hasattr(fref,'get_object') else fref)['/T']))
+                           for fref in keep
+                           if '/T' in (fref.get_object() if hasattr(fref,'get_object') else fref)
+                           and '.' in str((fref.get_object() if hasattr(fref,'get_object') else fref)['/T'])]
+            flat_objgens = {
+                (f.get_object() if hasattr(f, 'get_object') else f).objgen
+                for f, _ in flat_fields
+                if hasattr(f.get_object() if hasattr(f, 'get_object') else f, 'objgen')
+            }
+            keep_clean = [
+                fref for fref in keep
+                if not (
+                    hasattr(fref.get_object() if hasattr(fref, 'get_object') else fref, 'objgen')
+                    and (fref.get_object() if hasattr(fref, 'get_object') else fref).objgen in flat_objgens
+                )
+            ]
+
+            if flat_fields:
+                # Ensure alis group exists
+                if 'alis' not in group_refs:
+                    alis_obj = pikepdf.Dictionary(T=pikepdf.String('alis'), Kids=pikepdf.Array())
+                    alis_ref = pdf.make_indirect(alis_obj)
+                    keep_clean.insert(0, alis_ref)
+                    group_refs['alis'] = alis_ref
+                    group_objs['alis'] = alis_obj
+
+                renested = 0
+                for fref, dotted_name in flat_fields:
+                    parts = dotted_name.split('.')
+                    if len(parts) < 2:
+                        keep_clean.append(fref)
+                        continue
+                    signer = parts[0]
+                    subgroup = parts[1]
+                    leaf = '.'.join(parts[2:]) if len(parts) > 2 else parts[1]
+                    if signer not in group_refs:
+                        sg_obj = pikepdf.Dictionary(T=pikepdf.String(signer), Kids=pikepdf.Array())
+                        sg_ref = pdf.make_indirect(sg_obj)
+                        keep_clean.append(sg_ref)
+                        group_refs[signer] = sg_ref
+                        group_objs[signer] = sg_obj
+                    sub_ref, sub_obj = _find_or_create_subgroup(
+                        group_refs[signer], group_objs[signer], subgroup)
+                    f = fref.get_object() if hasattr(fref, 'get_object') else fref
+                    f['/T'] = pikepdf.String(leaf)
+                    f['/Parent'] = sub_ref
+                    sub_obj['/Kids'].append(fref)
+                    renested += 1
+
+                acroform['/Fields'] = pikepdf.Array(keep_clean)
+                print(f"[field-updater] Hierarchy repair: re-nested {renested} flat root field(s)")
+            elif merged_dupes:
+                acroform['/Fields'] = pikepdf.Array(keep_clean)
+
+            top_groups = [str((fref.get_object() if hasattr(fref,'get_object') else fref).get('/T','?'))
+                          for fref in acroform['/Fields']
+                          if any('/T' in (k.get_object() if hasattr(k,'get_object') else k)
+                                 for k in (fref.get_object() if hasattr(fref,'get_object') else fref).get('/Kids',[]))]
+            print(f"[field-updater] Final top-level groups: {top_groups}")
 
             # Save the modified PDF
             pdf.save(output_path)
