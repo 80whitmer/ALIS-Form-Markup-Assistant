@@ -138,7 +138,50 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
                 return field_index
             else:
                 # Terminal field whose /Kids are widget annotations.
-                # Extract position and page from the widget kids.
+                #
+                # Non-alis fields with MULTIPLE widgets: emit one record per widget so
+                # every visual box gets its own page/position and a unique suggested name.
+                # This lets the user review and name each occurrence individually before apply.
+                #
+                # alis.* fields intentionally repeat the same DB value across all widgets
+                # (e.g. the resident name printed on every page) — keep them as one record.
+                is_alis = field_name.startswith('alis.')
+                widget_count = len(kid_objs)
+
+                if not is_alis and widget_count > 1:
+                    for widget_index, kid_obj in enumerate(kid_objs):
+                        wx, wy, ww, wh = 0, 0, 0, 0
+                        w_page = 1
+                        if '/Rect' in kid_obj:
+                            rect = kid_obj['/Rect']
+                            wx = float(rect[0])
+                            wy = float(rect[1])
+                            ww = float(rect[2]) - float(rect[0])
+                            wh = float(rect[3]) - float(rect[1])
+                        try:
+                            if hasattr(kid_obj, 'objgen') and kid_obj.objgen[0] in page_map:
+                                w_page = page_map[kid_obj.objgen[0]]
+                        except:
+                            pass
+                        ff = int(field_ref['/Ff']) if '/Ff' in field_ref else 0
+                        fields.append({
+                            'field_name': field_name,
+                            'field_type': field_type,
+                            'field_page': w_page,
+                            'field_index': field_index,
+                            'x': int(wx),
+                            'y': int(wy),
+                            'width': int(ww),
+                            'height': int(wh),
+                            'widget_index': widget_index,
+                            'widget_count': widget_count,
+                            'required': bool(ff & 0x2),
+                            'read_only': bool(ff & 0x1),
+                        })
+                        field_index += 1
+                    return field_index
+
+                # Single widget OR alis.* field: use first widget only (original behaviour)
                 for kid_obj in kid_objs:
                     if '/Rect' in kid_obj:
                         rect = kid_obj['/Rect']
@@ -173,6 +216,7 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
             except:
                 pass
 
+        ff = int(field_ref['/Ff']) if '/Ff' in field_ref else 0
         fields.append({
             'field_name': field_name,
             'field_type': field_type,
@@ -181,7 +225,11 @@ def process_field_recursive(field_ref, field_index, fields, page_map):
             'x': int(x),
             'y': int(y),
             'width': int(width),
-            'height': int(height)
+            'height': int(height),
+            'widget_index': 0,   # single widget (or alis.* multi-widget kept as one record)
+            'widget_count': 1,
+            'required': bool(ff & 0x2),
+            'read_only': bool(ff & 0x1),
         })
 
         return field_index + 1

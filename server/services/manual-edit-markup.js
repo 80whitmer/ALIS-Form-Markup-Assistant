@@ -262,8 +262,8 @@ async function runManualEditJob(jobId, options) {
         signer: undefined, // Undefined - user will fill in
         confidence: 1.0, // Manual edit has highest confidence
         approval_status: 'approved', // Auto-approve in manual edit
-        required: normalizedType === 'signature',
-        read_only: false,
+        required: field.required !== undefined ? field.required : normalizedType === 'signature',
+        read_only: field.read_only !== undefined ? field.read_only : false,
         border: false
       };
     });
@@ -294,10 +294,9 @@ async function runManualEditJob(jobId, options) {
 
       const previewPromises = batch.map(async (suggestion) => {
         try {
-          const field = fields.find(f => {
-            const normalized = f.field_type === 'button' ? 'check' : f.field_type;
-            return f.field_name === suggestion.field_name;
-          });
+          // Use field_index (unique per widget record) to correctly resolve multi-widget fields.
+          const field = fields.find(f => f.field_index === suggestion.field_index) ||
+                        fields.find(f => f.field_name === suggestion.field_name);
 
           if (!field || field.x === undefined) {
             console.log(`[${jobId}] Field ${suggestion.field_name}: No position data available`);
